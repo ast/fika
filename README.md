@@ -5,8 +5,54 @@ channel that can hear you gets it. fika is a 500 Hz, 16-tone MFSK mode with
 per-symbol tone hopping and LDPC coding, built for ordinary SSB transceivers, a
 sound card, and a Raspberry Pi, with no dependence on internet time or GPS.
 
-Status: modem, protocol layer, channel simulator and a test CLI work end to
-end in simulation. Nothing has been on the air yet.
+## In numbers
+
+Sensitivity is quoted the way FT8 reports it: signal power against the
+noise power in a 2500 Hz SSB passband. At −12 dB the signal carries a
+sixteenth of the noise power in the receiver; you hear nothing but hiss.
+
+| | fika fast | fika slow |
+|---|---|---|
+| Decodes down to (AWGN, 50 % of messages, simulated) | **−11.5 dB** | **−18.7 dB** |
+| Bandwidth | 500 Hz | 500 Hz |
+| Net text rate | ~60 bit/s, about 15 characters per second | ~12 bit/s, about 3 per second |
+| 160-character message on air | about 13 s | about 65 s |
+| Stations per SSB passband | 4 lanes, one station each, all decoded at once | same |
+| Needs a clock, internet or GPS | no | no |
+
+How that compares with modes people actually run, using their commonly
+quoted figures:
+
+| Mode | Bandwidth | Text rate | Solid copy down to | Error correction | Interference |
+|---|---|---|---|---|---|
+| RTTY 45 | 250 Hz | ~6 char/s | about −5 dB | none | a carrier in the shift wrecks it |
+| PSK31 | 60 Hz | ~5 char/s | about −10 dB | none | prints garbage during QRM |
+| **fika fast** | 500 Hz | ~15 char/s | **−11.5 dB** | LDPC | a carrier costs 1 symbol in 16 |
+| Olivia 16/500 | 500 Hz | ~2 char/s | about −13 dB | heavy, rate 1/4 | good |
+| **fika slow** | 500 Hz | ~3 char/s | **−18.7 dB** | LDPC | as above |
+| JS8Call normal | 50 Hz | ~1.5 char/s | about −21 dB | LDPC | a carrier on the signal kills it |
+| FT8 | 50 Hz | 77 bits per 15 s | −21 dB | LDPC | same, but it retries in 15 s |
+
+What fika buys over the keyboard modes is three things at once: every
+message is error-corrected, so what you read is what was sent; the tone
+hops inside the lane every symbol, so a carrier or a noise burst costs a
+few symbols instead of the message; and detection is non-coherent, so
+ionospheric phase flutter that makes PSK31 unusable on polar paths costs
+fika only its usual fading penalty. What it gives up is spectral
+efficiency: PSK31 does about eight times more bits per hertz. Against FT8
+and JS8Call it trades the last 2 to 3 dB of sensitivity and their fixed
+time slots for free-form text at ten times the speed and no clock at all.
+
+Caveats, honestly: the fika figures are from the simulator in this
+repository, about 1 dB behind theory and not yet confirmed on the air.
+Under selective fading (CCIR moderate) the fast profile needs about −7 dB,
+because a 500 Hz lane can sit in a two-path notch for a whole burst. The
+other modes' numbers are the figures their communities quote, give or take
+a decibel.
+
+Status: modem, protocol layer, channel simulator, station runtime and a
+terminal UI work end to end in simulation and in software loopback on the
+speakers. Nothing has been on the air yet.
 
 - [PLAN.md](PLAN.md) — goals, decisions, rejected alternatives, roadmap.
 - [docs/SPEC.md](docs/SPEC.md) — the normative protocol specification.
