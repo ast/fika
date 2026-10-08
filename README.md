@@ -129,9 +129,7 @@ fika-tui -c fika.toml
 - **Without a radio.** Set `input = "none"`, `output = "default"` and
   `loopback = true`. Bursts play on the speakers, and the same samples are
   fed into the receiver at playback pace, so you hear the modem and watch
-  your own message decode. With a microphone as input you can also decode
-  another computer across the room acoustically. `just tui-loopback` does
-  this.
+  your own message decode. `just tui-loopback` does this.
 
 In the TUI, type and press Enter to send. `/to @group`, `/to CALL` or
 `/to all` changes the destination, `/lane 0..3` and `/profile fast|slow`

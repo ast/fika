@@ -24,7 +24,7 @@ struct Cli {
     #[arg(long)]
     example_config: bool,
     /// Headless self-test: send this text once, wait for it to come back
-    /// (software loopback or acoustically), print the result and exit.
+    /// through the software loopback, print the result and exit.
     #[arg(long, value_name = "TEXT")]
     selftest: Option<String>,
 }
