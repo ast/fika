@@ -36,6 +36,9 @@
               # task runner and audio utilities for test recordings
               pkgs.just
               pkgs.sox
+
+              # lossless PNG optimiser for README screenshots
+              pkgs.oxipng
             ];
 
             shellHook = ''

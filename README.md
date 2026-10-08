@@ -5,6 +5,11 @@ channel that can hear you gets it. fika is a 500 Hz, 16-tone MFSK mode with
 per-symbol tone hopping and LDPC coding, built for ordinary SSB transceivers, a
 sound card, and a Raspberry Pi, with no dependence on internet time or GPS.
 
+![fika-tui in software loopback: a message being sent and decoded, the heard list, the waterfall with the hopping tones in lane 1, and the log](docs/images/fika-tui.png)
+
+*The terminal UI transmitting to itself over the speakers: the waterfall shows
+the 16 tones hopping inside lane 1 while the same burst decodes at +12 dB.*
+
 ## In numbers
 
 Sensitivity is quoted the way FT8 reports it: signal power against the
