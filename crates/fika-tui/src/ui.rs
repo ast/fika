@@ -250,13 +250,14 @@ fn draw_log(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     let st = &app.station;
-    let preview = if app.input.starts_with('/') || app.input.is_empty() {
+    let input = app.editor.text();
+    let preview = if input.starts_with('/') || input.is_empty() {
         String::new()
     } else {
-        match st.preview(&app.input) {
+        match st.preview(&input) {
             Some((bits, blocks, air)) => format!(
                 " {} chars, {bits} bits, {blocks} block{}, {air:.1} s ",
-                app.input.chars().count(),
+                input.chars().count(),
                 if blocks == 1 { "" } else { "s" }
             ),
             None => " too long ".into(),
@@ -278,15 +279,14 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
         format!("  {}", app.status),
         Style::default().fg(Color::DarkGray),
     );
-    let text = Line::from(vec![Span::raw(app.input.as_str()), status]);
+    let text = Line::from(vec![Span::raw(input.clone()), status]);
     let block = Block::default().borders(Borders::ALL).title(title);
     f.render_widget(Paragraph::new(text).block(block), area);
     let x = area.x
         + 1
-        + app
-            .input
+        + input
             .chars()
-            .take(app.cursor)
+            .take(app.editor.cursor())
             .map(|c| if c.is_ascii() { 1 } else { 2 })
             .sum::<usize>() as u16;
     f.set_cursor_position((x.min(area.x + area.width - 2), area.y + 1));
@@ -294,7 +294,7 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame, area: Rect) {
     let w = 60.min(area.width.saturating_sub(4));
-    let h = 14.min(area.height.saturating_sub(2));
+    let h = 18.min(area.height.saturating_sub(2));
     let rect = Rect::new(
         area.x + (area.width - w) / 2,
         area.y + (area.height - h) / 2,
@@ -312,6 +312,9 @@ fn draw_help(f: &mut Frame, area: Rect) {
         Line::from("/clear                    clear the chat"),
         Line::from("/quit  (or Ctrl-C)        exit"),
         Line::from(""),
+        Line::from("Editing: Emacs keys. C-a C-e C-b C-f M-b M-f move,"),
+        Line::from("C-h C-d delete, C-k C-u C-w M-d kill, C-y yank,"),
+        Line::from("C-p C-n history, C-t transpose, C-l clears the chat."),
         Line::from("Direct messages to a callsign request an ACK."),
         Line::from("F1 or Esc closes this help."),
     ];

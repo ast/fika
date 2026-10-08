@@ -6,10 +6,11 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers
 
 use fika_station::Station;
 
+use crate::line_edit::{Action, LineEditor};
+
 pub struct App {
     pub station: Station,
-    pub input: String,
-    pub cursor: usize,
+    pub editor: LineEditor,
     pub status: String,
     pub show_help: bool,
     quit: bool,
@@ -19,8 +20,7 @@ impl App {
     pub fn new(station: Station) -> Self {
         Self {
             station,
-            input: String::new(),
-            cursor: 0,
+            editor: LineEditor::default(),
             status: "type a message and press Enter, /help for commands".into(),
             show_help: false,
             quit: false,
@@ -43,47 +43,27 @@ impl App {
 
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         match code {
-            KeyCode::Char('c') | KeyCode::Char('d') if mods.contains(KeyModifiers::CONTROL) => {
-                self.quit = true
+            KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => {
+                self.quit = true;
+                return;
             }
-            KeyCode::Char('u') if mods.contains(KeyModifiers::CONTROL) => {
-                self.input.clear();
-                self.cursor = 0;
+            KeyCode::Char('l') if mods.contains(KeyModifiers::CONTROL) => {
+                self.station.chat.clear();
+                return;
             }
-            KeyCode::Char(c) => {
-                self.input.insert(self.byte_index(), c);
-                self.cursor += 1;
+            KeyCode::Esc => {
+                self.show_help = false;
+                return;
             }
-            KeyCode::Backspace if self.cursor > 0 => {
-                self.cursor -= 1;
-                let i = self.byte_index();
-                self.input.remove(i);
-            }
-            KeyCode::Delete if self.cursor < self.input.chars().count() => {
-                let i = self.byte_index();
-                self.input.remove(i);
-            }
-            KeyCode::Left => self.cursor = self.cursor.saturating_sub(1),
-            KeyCode::Right => self.cursor = (self.cursor + 1).min(self.input.chars().count()),
-            KeyCode::Home => self.cursor = 0,
-            KeyCode::End => self.cursor = self.input.chars().count(),
-            KeyCode::Esc => self.show_help = false,
-            KeyCode::F(1) => self.show_help = !self.show_help,
-            KeyCode::Enter => {
-                let line = std::mem::take(&mut self.input);
-                self.cursor = 0;
-                self.submit(line.trim());
+            KeyCode::F(1) => {
+                self.show_help = !self.show_help;
+                return;
             }
             _ => {}
         }
-    }
-
-    fn byte_index(&self) -> usize {
-        self.input
-            .char_indices()
-            .nth(self.cursor)
-            .map(|(i, _)| i)
-            .unwrap_or(self.input.len())
+        if let Action::Submit(line) = self.editor.key(code, mods) {
+            self.submit(line.trim());
+        }
     }
 
     fn submit(&mut self, line: &str) {

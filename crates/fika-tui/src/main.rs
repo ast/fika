@@ -1,6 +1,7 @@
 //! fika terminal UI: chat over HF with a live heard list and waterfall.
 
 mod app;
+mod line_edit;
 mod ui;
 
 use std::path::PathBuf;
