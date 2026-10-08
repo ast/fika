@@ -16,14 +16,15 @@ roadmap.
   One send is one burst. Receivers show a message only once it has fully decoded.
 - **Tactical.** No dependency on internet time, NTP or GPS. Works with two radios
   and nothing else.
-- **Shared channel.** Four 500 Hz lanes fit in one SSB passband. Stations on
-  different lanes transmit at the same time and a listener decodes all of them.
+- **Shared channel.** Several stations transmit at the same time in the same
+  2.4 kHz band and a listener decodes all of them.
 - **Interference tolerant.** A carrier or a burst of noise inside the signal
   costs a few symbols, not the message.
 - **Ordinary hardware.** Any SSB rig in data mode, any sound card, PTT through
   hamlib's rigctld. Runs comfortably on a Pi 4.
-- **Band-plan friendly.** 500 Hz occupied bandwidth, so it fits the IARU
-  Region 1 narrow-band digimode segments on every HF band.
+- **Wide digital mode.** 2400 Hz occupied bandwidth (the whole SSB channel),
+  for the wide-digimode band segments. The 500 Hz constraint of v1 was
+  dropped to make simultaneous senders decodable.
 - **Modern Rust.** clap, thiserror, anyhow, cpal. Reuse the DSP from
   [rust-radio](../rust-radio/) where it fits.
 
@@ -34,17 +35,17 @@ roadmap.
 | Timing | Asynchronous bursts, no time slots | Must work with no internet and jammed GPS. |
 | Message model | Store-and-send: one send = one burst, no live typing | SMS / WhatsApp feel. |
 | Waveform | Non-coherent MFSK with Gaussian pulse shaping, one tone at a time | Constant envelope, immune to ALC, robust on HF multipath. |
-| Lane | 500 Hz wide, 16 tones at 31.25 Hz spacing | Fits every IARU R1 narrow digimode segment. Four lanes stack across a 300–2700 Hz passband and are all decoded from one FFT. |
-| Multiple access and QRM | Per-symbol tone permutation inside the lane, derived from a Costas-array pattern, with a random per-transmission pattern phase | Narrow interferers become random erasures the FEC absorbs. Overlapping preambles are separated cleanly. Overlapping data at equal power does not decode; the honest multi-access mechanism is one station per lane plus listen-before-talk, with capture and successive cancellation for overlaps of 6 dB or more. |
-| Profiles | Two: **fast** (32 ms symbols, 31.25 baud, 62.5 bit/s coded, about −12.5 dB) and **slow** (160 ms symbols, 6.25 baud, 12.5 bit/s coded, about −19.5 dB). Same tones, only symbol length differs. Receivers always run both on every lane | Local chat and weak-signal DX with a small spec. |
-| FEC | LDPC with soft-decision belief propagation on the 16 tone energies | Within about 1 dB of the limit at these block sizes; handles erased symbols naturally. Start with CCSDS codes from `labrador-ldpc`, design a custom QC-LDPC later. |
-| Message length | Up to about 240 characters; a burst is 1..N fixed LDPC blocks with sequence numbers | Tweet length bounds airtime per message. |
+| Band | 64 tones at 37.5 Hz across 300–2700 Hz, one band | Frequency diversity, 6 bits per symbol, 1.8× the bit rate of v1. |
+| Multiple access and QRM | Symbol-level decoding with a GF(64) LDPC code and an interference-aware likelihood; per-symbol Costas tone permutation with a random per-burst phase | Two to four equal-power senders overlapping in time all decode (measured); a carrier or notch costs symbols, not messages. |
+| Profiles | Two: **fast** (26.67 ms symbols, 37.5 baud, 112 bit/s coded, −10.2 dB measured) and **slow** (160 ms, 6.25 baud, 19 bit/s, −19.3 dB). Same tones, only symbol length differs | Local chat and weak-signal DX. |
+| FEC | Non-binary LDPC over GF(64), n = 128, k = 64, dv = 2, dc = 4, sum-product with Hadamard check nodes, symbol-level likelihoods | An overlapping sender costs ~1 bit of 6 per symbol instead of half the bit LLRs; within ~1 dB of theory. |
+| Message length | Up to about 240 characters; a burst is 1..8 blocks of 384 bits | 240 characters is two blocks, 7.7 s. |
 | Text coding | Compressed UTF-8: adaptive arithmetic coder with a fixed context model, about 2.5 bits per character, shortcuts for callsigns and common phrases | åäö and emoji work; 240 characters is about 600 bits. |
 | Addressing | Sender callsign in 28 bits (FT8 packing with escape). Destination is a named group (hashed ID), a callsign, or all. Message ID for dedup. Hop count reserved | Chat rooms plus private side chats. |
 | Receipts | Direct messages get an automatic short ACK burst, a tick in the UI, and a few retries with backoff. Group messages are fire-and-forget | Ten listeners would mean ten ACKs; avoid ACK storms. |
 | Relay | Specified (dup suppression by message ID and hop count), not built in v1 | Don't paint into a corner. |
-| Presence | Passive heard list (callsign, SNR, lane, time) from every decode, plus an optional idle beacon every 10–30 minutes | Cheap "online dots". |
-| Channel access | Listen-before-talk with random backoff; sender picks the quietest lane | |
+| Presence | Passive heard list (callsign, SNR, time) from every decode, plus an optional idle beacon every 10–30 minutes | Cheap "online dots". |
+| Channel access | Listen-before-talk optional and off by default: overlapping bursts decode | |
 | Rig control | hamlib `rigctld` over TCP for PTT, frequency and mode. Pure-Rust client on our side | Covers IC-705 and FT-891 with no driver work. |
 | Software v1 | A single CLI binary | Quickest path to a first QSO. |
 | Name | fika | Swedish coffee-break chat. |
@@ -58,7 +59,7 @@ which means NTP or GPS. That fails exactly when a tactical mode is needed.
 **OFDM with PSK or QAM, as in VARA and ARDOP.** Many more bits per hertz, but a
 high crest factor means backing power off 6 to 10 dB, coherent tracking is
 fragile at low SNR, and decoding several overlapping signals in one channel is
-much harder. Good for point-to-point file transfer, wrong for a shared chat lane.
+much harder. Good for point-to-point file transfer, wrong for a shared chat channel.
 
 **Serial-tone 8-PSK with an adaptive equalizer, as in MIL-STD-188-110.** The
 military answer: fast, interference tolerant, asynchronous bursts. But it fills
@@ -70,10 +71,10 @@ first chat happens. May return later as a wide profile behind the same framing.
 channel and the politest neighbour, but a co-slot interferer or a same-slot
 collision kills the message outright.
 
-**A 2400 Hz, 64-tone hopping signal.** About 1 dB more sensitive and twice as
-fast per sender, and more fade diversity. Rejected because it is confined to the
-small wide-digimode segments and lands on every narrow signal nearby. The 500 Hz
-lane is usable almost everywhere and four lanes recover the aggregate capacity.
+**500 Hz lanes with binary LDPC (v1).** Band-plan friendly and four stations
+per passband on separate lanes, but two equal-power senders on one lane both
+failed because bit-level likelihoods lose half their information to a second
+peak. Replaced by the full-band 64-tone waveform with symbol-level decoding.
 
 **Polar and convolutional codes.** Polar is marginally better under 256 bits
 but has no mature Rust crate and list decoding is more work. Convolutional with
@@ -99,7 +100,12 @@ and neither blocks the modem. v1 is one CLI binary and rigctld.
    audio, rigctld, streaming receiver, transmit queue, heard list, automatic
    ACK, beacons, listen-before-talk, receiver blanking while keyed, ACK
    window hold, software loopback, native PipeWire backend with a live
-   multi-station channel over a virtual sink) and `fika-tui`. Open: sender-side retries
+   multi-station channel over a virtual sink) and `fika-tui`.
+   **v2 waveform (done):** 64 tones over 2.4 kHz, GF(64) LDPC with
+   symbol-level decoding (`fika-nb`), lanes removed; 2–4 simultaneous
+   same-band senders decode in simulation. Open: energy- and time-domain
+   cancellation for large power imbalance, rate-1/3 crowd profile, frozen
+   code table. Open: sender-side retries
    when no ACK arrives, automatic beacons, simulated CAT for the IC-705 and
    FT-891.
 4. **v3 — on air.** Cross-compile for aarch64, run on `shack` with the IC-705,

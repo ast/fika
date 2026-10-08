@@ -18,8 +18,6 @@ pub struct TxArgs {
     /// Message text.
     #[arg(long)]
     pub text: String,
-    #[arg(long, default_value_t = 1)]
-    pub lane: usize,
     #[arg(long, default_value = "fast")]
     pub profile: Profile,
     /// Pattern phase 0..15; random if omitted.
@@ -72,7 +70,7 @@ pub fn run(args: TxArgs) -> Result<()> {
     let (message, burst) = build(&args, msg_id, phase)?;
     let (payload, raw) = message.payload();
     let tx = Transmitter::new(args.fs);
-    let audio = tx.render(&burst, args.lane, args.profile, args.offset_hz)?;
+    let audio = tx.render(&burst, args.profile, args.offset_hz)?;
     let lead = (args.lead_s * args.fs as f64) as usize;
     let tail = (args.tail_s * args.fs as f64) as usize;
     let mut out = vec![0f32; lead];
@@ -80,7 +78,7 @@ pub fn run(args: TxArgs) -> Result<()> {
     out.extend(std::iter::repeat_n(0f32, tail));
     crate::wav::write(&args.output, &out, args.fs)?;
     println!(
-        "{} chars -> {} payload bits{} -> {} block(s), {} symbols, {:.1} s on air ({} profile, lane {}, phase {}, msg_id {:04X})",
+        "{} chars -> {} payload bits{} -> {} block(s), {} symbols, {:.1} s on air ({} profile, phase {}, msg_id {:04X})",
         message.text.chars().count(),
         payload.len(),
         if raw { " (raw)" } else { "" },
@@ -88,7 +86,6 @@ pub fn run(args: TxArgs) -> Result<()> {
         burst.symbols(),
         burst.airtime_s(args.profile),
         args.profile,
-        args.lane,
         phase,
         msg_id
     );

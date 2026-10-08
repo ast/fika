@@ -7,8 +7,11 @@ grid = "JO57"
 groups = ["fika"]          # first entry is the default destination
 
 [audio]
-# "default", "none", or a substring of the device name (see fika-tui --list-audio).
-# IC-705 / FT-891 over USB show up as "USB Audio CODEC".
+# backend "alsa": input/output are "default", "none", or a substring of the
+# device name (see fika-tui --list-audio); the IC-705 / FT-891 USB codec
+# shows up as "USB Audio CODEC". backend "pipewire": PipeWire node names;
+# naming a sink as input captures its monitor.
+backend = "alsa"
 input = "default"
 output = "default"
 sample_rate = 48000
@@ -24,6 +27,14 @@ tx_tail_ms = 100
 set_data_mode = false
 
 [modem]
-lane = 1                   # 0..3
 profile = "fast"           # fast or slow
 threshold = 40.0
+listen_before_talk = false # hold transmissions while the band is busy
+request_ack = false        # ask for an ACK on direct messages
+
+# Several stations on this host over a simulated channel (see `just tui-live`).
+[live]
+enabled = false
+snr_db = -8.0              # how loud the others arrive here
+channel = "awgn"           # applied to our bursts on the way out
+offset_hz = 0.0            # our transmitter's frequency error

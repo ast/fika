@@ -134,13 +134,11 @@ impl Default for RigCfg {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ModemCfg {
-    /// Transmit lane 0..3.
-    pub lane: usize,
     /// "fast" or "slow".
     pub profile: String,
     /// SYNC detection threshold.
     pub threshold: f32,
-    /// Wait for the lane to be quiet before transmitting. Off by default:
+    /// Wait for the band to be quiet before transmitting. Off by default:
     /// HF is never quiet, and the energy test would hold you for noise.
     pub listen_before_talk: bool,
     /// Ask for an acknowledgement on direct messages.
@@ -150,7 +148,6 @@ pub struct ModemCfg {
 impl Default for ModemCfg {
     fn default() -> Self {
         Self {
-            lane: 1,
             profile: "fast".into(),
             threshold: 40.0,
             listen_before_talk: false,
@@ -170,7 +167,6 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
-        anyhow::ensure!(self.modem.lane < 4, "modem.lane must be 0..3");
         anyhow::ensure!(
             matches!(self.audio.sample_rate, 12_000 | 24_000 | 48_000 | 96_000),
             "audio.sample_rate must be 12000, 24000, 48000 or 96000"
@@ -231,10 +227,9 @@ tx_tail_ms = 100
 set_data_mode = false
 
 [modem]
-lane = 1                   # 0..3
 profile = "fast"           # fast or slow
 threshold = 40.0
-listen_before_talk = false # hold transmissions while the lane is busy
+listen_before_talk = false # hold transmissions while the band is busy
 request_ack = false        # ask for an ACK on direct messages
 
 # Several stations on this host over a simulated channel (see `just tui-live`).

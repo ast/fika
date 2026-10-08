@@ -1,67 +1,66 @@
 # fika
 
 Group chat over HF radio. Type a message, press send, and every station on the
-channel that can hear you gets it. fika is a 500 Hz, 16-tone MFSK mode with
-per-symbol tone hopping and LDPC coding, built for ordinary SSB transceivers, a
-sound card, and a Raspberry Pi, with no dependence on internet time or GPS.
+channel that can hear you gets it, even while others are sending. fika is a
+64-tone MFSK mode across a 2.4 kHz SSB channel with per-symbol tone hopping
+and a GF(64) LDPC code decoded at symbol level, so several stations
+transmitting at the same time are all decoded. Built for ordinary SSB
+transceivers, a sound card, and a Raspberry Pi, with no dependence on
+internet time or GPS.
 
-![fika-tui in software loopback: a message being sent and decoded, the heard list, the waterfall with the hopping tones in lane 1, and the log](docs/images/fika-tui.png)
+![fika-tui in software loopback: a message being sent and decoded, the heard list, the waterfall with the hopping tones, and the log](docs/images/fika-tui.png)
 
-*The terminal UI transmitting to itself over the speakers: the waterfall shows
-the 16 tones hopping inside lane 1 while the same burst decodes at +12 dB.*
+*The terminal UI transmitting to itself over the speakers (v1 screenshot: the
+v2 waveform hops over the whole band). The same burst decodes at +12 dB.*
 
 ## In numbers
 
 Sensitivity is quoted the way FT8 reports it: signal power against the
-noise power in a 2500 Hz SSB passband. At −12 dB the signal carries a
-sixteenth of the noise power in the receiver; you hear nothing but hiss.
+noise power in a 2500 Hz SSB passband. At −10 dB the signal carries a tenth
+of the noise power in the receiver; you hear nothing but hiss.
 
 | | fika fast | fika slow |
 |---|---|---|
-| Decodes down to (AWGN, 50 % of messages, simulated) | **−11.5 dB** | **−18.7 dB** |
-| Bandwidth | 500 Hz | 500 Hz |
-| Net text rate | ~60 bit/s, about 15 characters per second | ~12 bit/s, about 3 per second |
-| 160-character message on air | about 13 s | about 65 s |
-| Stations per SSB passband | 4 lanes, one station each, all decoded at once | same |
+| Decodes down to (AWGN, 50 % of messages, simulated) | **−10.2 dB** | **−19.3 dB** |
+| Bandwidth | 2400 Hz | 2400 Hz |
+| Net text rate | ~110 bit/s, about 25 characters per second | ~19 bit/s, about 4 per second |
+| 240-character message on air | 7.7 s | 46 s |
+| Several stations transmitting at the same time in the same band | 2, 3 and 4 equal-power senders all decoded (simulated, −6 dB each) | same code, not yet measured |
 | Needs a clock, internet or GPS | no | no |
 
 How that compares with modes people actually run, using their commonly
 quoted figures:
 
-| Mode | Bandwidth | Text rate | Solid copy down to | Error correction | Interference |
+| Mode | Bandwidth | Text rate | Solid copy down to | Error correction | Overlapping senders |
 |---|---|---|---|---|---|
-| RTTY 45 | 250 Hz | ~6 char/s | about −5 dB | none | a carrier in the shift wrecks it |
-| PSK31 | 60 Hz | ~5 char/s | about −10 dB | none | prints garbage during QRM |
-| **fika fast** | 500 Hz | ~15 char/s | **−11.5 dB** | LDPC | a carrier costs 1 symbol in 16 |
-| Olivia 16/500 | 500 Hz | ~2 char/s | about −13 dB | heavy, rate 1/4 | good |
-| **fika slow** | 500 Hz | ~3 char/s | **−18.7 dB** | LDPC | as above |
-| JS8Call normal | 50 Hz | ~1.5 char/s | about −21 dB | LDPC | a carrier on the signal kills it |
-| FT8 | 50 Hz | 77 bits per 15 s | −21 dB | LDPC | same, but it retries in 15 s |
+| RTTY 45 | 250 Hz | ~6 char/s | about −5 dB | none | no |
+| PSK31 | 60 Hz | ~5 char/s | about −10 dB | none | no |
+| Olivia 16/500 | 500 Hz | ~2 char/s | about −13 dB | heavy, rate 1/4 | no |
+| **fika fast** | 2400 Hz | ~25 char/s | **−10.2 dB** | GF(64) LDPC | **yes, several** |
+| JS8Call normal | 50 Hz | ~1.5 char/s | about −21 dB | LDPC | no (time slots) |
+| FT8 | 50 Hz | 77 bits per 15 s | −21 dB | LDPC | no (time slots) |
+| **fika slow** | 2400 Hz | ~4 char/s | **−19.3 dB** | GF(64) LDPC | yes |
 
-What fika buys over the keyboard modes is three things at once: every
-message is error-corrected, so what you read is what was sent; the tone
-hops inside the lane every symbol, so a carrier or a noise burst costs a
-few symbols instead of the message; and detection is non-coherent, so
-ionospheric phase flutter that makes PSK31 unusable on polar paths costs
-fika only its usual fading penalty. What it gives up is spectral
-efficiency: PSK31 does about eight times more bits per hertz. Against FT8
-and JS8Call it trades the last 2 to 3 dB of sensitivity and their fixed
-time slots for free-form text at ten times the speed and no clock at all.
+What makes fika different is that the receiver decodes at symbol level with
+a non-binary code over 64 tones: when two or three stations key up on top of
+each other, each costs the others about one bit per symbol instead of the
+whole message. Combined with error correction, tone hopping over the whole
+band (a carrier or a notch costs symbols, not messages) and non-coherent
+detection (phase flutter costs only the usual fading penalty), it is built
+for a crowded, informal channel rather than for spectral efficiency, where
+PSK31 does about forty times more bits per hertz.
 
 Caveats, honestly: the fika figures are from the simulator in this
-repository, about 1 dB behind theory and not yet confirmed on the air.
-Under selective fading (CCIR moderate) the fast profile needs about −7 dB,
-because a 500 Hz lane can sit in a two-path notch for a whole burst. The
+repository, within a decibel of theory and not yet confirmed on the air.
+Under selective fading (CCIR moderate) the fast profile needs about −2 dB.
+2400 Hz is a wide digital mode, for the wide-digimode band segments. The
 other modes' numbers are the figures their communities quote, give or take
 a decibel.
 
 Status: modem, protocol layer, channel simulator, station runtime and a
-terminal UI work end to end in simulation and in software loopback on the
-speakers. Nothing has been on the air yet.
-
-- [PLAN.md](PLAN.md) — goals, decisions, rejected alternatives, roadmap.
-- [docs/SPEC.md](docs/SPEC.md) — the normative protocol specification.
-- [docs/DESIGN.md](docs/DESIGN.md) — rationale and open issues.
+terminal UI work end to end in simulation, in software loopback on the
+speakers, and over a PipeWire virtual channel between terminals. Nothing has
+been on the air yet.
 
 ## Development shell
 
@@ -86,12 +85,12 @@ cargo run -p fika-cli -- rx fika.wav
 cargo run --release -p fika-cli -- sim --profile fast --channel awgn --sweep=-14:-9:1 --trials 50
 cargo run --release -p fika-cli -- sim --profile fast --channel moderate --sweep=-12:-2:2 --trials 30
 
-# Four stations at once on four lanes, then two in one lane 10 dB apart.
-cargo run --release -p fika-cli -- multi --stations 4 --snr=-6
-cargo run --release -p fika-cli -- multi --stations 2 --lane 1 --snr=-4 --spread-db 10 -v
+# Three stations transmitting at once in the same band, then two 10 dB apart.
+cargo run --release -p fika-cli -- multi --stations 3 --snr=-6
+cargo run --release -p fika-cli -- multi --stations 2 --snr=-8 --spread-db 10 -v
 
 # Impairments: ITU-R F.1487 presets (low/mid/high-latitude quiet, moderate,
-# disturbed, mid-nvis), interferers inside the lane, lightning static,
+# disturbed, mid-nvis), interferers inside the band, lightning static,
 # frequency drift and the rig's SSB passband.
 cargo run --release -p fika-cli -- sim --channel high-moderate --sweep=-8:0:2
 cargo run --release -p fika-cli -- sim --snr=-6 --interferer cw:1100:6 --interferer rtty:1300:-3
@@ -135,15 +134,16 @@ fika-tui -c fika.toml
   and `just tui-live AD8KM` in another. Every station plays into and
   listens to one PipeWire virtual sink, `fika-ether`, adds its own band
   noise at the configured SNR, and passes its bursts through a channel
-  model on the way out (`just tui-live OH2ABC 2 -12 poor` for lane 2 at
-  −12 dB over a CCIR poor channel). Half duplex applies: a station does not
+  model on the way out (`just tui-live OH2ABC -12 poor` for −12 dB over a
+  CCIR poor channel). Two stations sending at the same time are both
+  decoded by a third. Half duplex applies: a station does not
   hear the ether while it is keyed. `just live-down` removes the sink.
   This uses the native PipeWire backend (`[audio] backend = "pipewire"`),
   which addresses nodes by name; `--no-default-features` builds without it.
 
 In the TUI, type and press Enter to send. `/to @group`, `/to CALL` or
-`/to all` changes the destination, `/lane 0..3` and `/profile fast|slow`
-the waveform, `/beacon` sends a beacon, F1 shows help. Direct messages
+`/to all` changes the destination, `/profile fast|slow` the speed,
+`/beacon` sends a beacon, F1 shows help. Direct messages
 request an acknowledgement and show a delivery status.
 
 Crates: `fika-modem` (physical layer), `fika-proto` (frames, callsigns,

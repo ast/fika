@@ -1,9 +1,9 @@
-use labrador_ldpc::LDPCCode;
-
+use crate::costas::{LONG, LONG_RESIDUE, SHORT, SHORT_RESIDUE, scaled};
 use crate::params::PILOT_SYMBOLS;
 
-/// Long frames carry messages on (512,256) blocks; short frames carry ACKs
-/// and beacons on one (256,128) block (SPEC §7.1).
+/// Long frames carry messages (1..8 blocks); short frames carry ACKs and
+/// beacons (one block). Both use the same GF(64) code, n = 128, k = 64:
+/// 48 info bytes per block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FrameKind {
     Long,
@@ -13,47 +13,37 @@ pub enum FrameKind {
 impl FrameKind {
     pub const ALL: [FrameKind; 2] = [FrameKind::Long, FrameKind::Short];
 
-    pub fn code(self) -> LDPCCode {
-        match self {
-            FrameKind::Long => LDPCCode::TC512,
-            FrameKind::Short => LDPCCode::TC256,
-        }
+    /// GF(64) symbols per codeword.
+    pub fn coded_symbols(self) -> usize {
+        128
+    }
+
+    pub fn info_symbols(self) -> usize {
+        64
     }
 
     pub fn info_bits(self) -> usize {
-        self.code().k()
+        self.info_symbols() * crate::params::BITS_PER_SYMBOL
     }
 
     pub fn info_bytes(self) -> usize {
         self.info_bits() / 8
     }
 
-    pub fn coded_bits(self) -> usize {
-        self.code().n()
-    }
-
     pub fn data_symbols(self) -> usize {
-        self.coded_bits() / 4
+        self.coded_symbols()
     }
 
-    /// Symbols per block on air, pilots included: 132 long, 68 short.
+    /// Symbols per block on air, pilots included: 132.
     pub fn block_symbols(self) -> usize {
         PILOT_SYMBOLS + self.data_symbols()
     }
 
-    /// Interleaver geometry: rows × columns, rows × columns = coded bits.
-    pub fn interleaver(self) -> (usize, usize) {
+    /// SYNC tone of preamble symbol `n`.
+    pub fn sync_tone(self, n: usize) -> u8 {
         match self {
-            FrameKind::Long => (16, 32),
-            FrameKind::Short => (16, 16),
-        }
-    }
-
-    /// Which Costas sequence the SYNC part of the preamble uses.
-    pub fn sync_sequence(self) -> &'static [u8; 16] {
-        match self {
-            FrameKind::Long => &crate::costas::LONG,
-            FrameKind::Short => &crate::costas::SHORT,
+            FrameKind::Long => scaled(LONG[n], LONG_RESIDUE),
+            FrameKind::Short => scaled(SHORT[n], SHORT_RESIDUE),
         }
     }
 
@@ -77,12 +67,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sizes_match_spec() {
+    fn sizes() {
         assert_eq!(FrameKind::Long.block_symbols(), 132);
-        assert_eq!(FrameKind::Short.block_symbols(), 68);
-        assert_eq!(FrameKind::Long.info_bytes(), 32);
-        assert_eq!(FrameKind::Short.info_bytes(), 16);
-        let (r, c) = FrameKind::Long.interleaver();
-        assert_eq!(r * c, 512);
+        assert_eq!(FrameKind::Long.info_bytes(), 48);
+        assert_eq!(FrameKind::Long.info_bits(), 384);
     }
 }

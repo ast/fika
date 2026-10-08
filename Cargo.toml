@@ -7,6 +7,7 @@ members = [
   "crates/fika-cli",
   "crates/fika-station",
   "crates/fika-tui",
+  "crates/fika-nb",
 ]
 
 [workspace.package]
@@ -21,7 +22,6 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 num-complex = "0.4"
 rustfft = "6"
-labrador-ldpc = "1"
 rand = "0.9"
 rand_distr = "0.5"
 hound = "3"
@@ -33,6 +33,7 @@ toml = "0.8"
 ratatui = "0.29"
 pipewire = "0.8"
 fika-station = { path = "crates/fika-station" }
+fika-nb = { path = "crates/fika-nb" }
 fika-modem = { path = "crates/fika-modem" }
 fika-proto = { path = "crates/fika-proto" }
 fika-channel = { path = "crates/fika-channel" }

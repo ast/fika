@@ -10,7 +10,7 @@ authors.workspace = true
 thiserror.workspace = true
 num-complex.workspace = true
 rustfft.workspace = true
-labrador-ldpc.workspace = true
+fika-nb.workspace = true
 
 [dev-dependencies]
 rand.workspace = true

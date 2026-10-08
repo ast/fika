@@ -1,8 +1,10 @@
 # fika protocol specification
 
-Version 0.1 (draft). Normative. The rationale is in [DESIGN.md](DESIGN.md).
-The reference implementation lives in `crates/` of this repository; where the
-two disagree, the implementation is the bug until this document is changed.
+Version 0.2 (draft, "v2 waveform"). Normative. The rationale is in
+[DESIGN.md](DESIGN.md). The reference implementation lives in `crates/` of
+this repository; where the two disagree, the implementation is the bug until
+this document is changed. Version 0.1 (16-tone, 500 Hz lanes) is obsolete and
+kept only in the git history.
 
 The key words MUST, MUST NOT, SHOULD and MAY are to be read as in RFC 2119.
 
@@ -10,591 +12,380 @@ The key words MUST, MUST NOT, SHOULD and MAY are to be read as in RFC 2119.
 
 fika is a store-and-send text messaging mode for HF amateur radio. A
 transmitting station sends a complete message as one burst. Receiving
-stations decode bursts asynchronously, without any shared clock.
+stations decode bursts asynchronously, without any shared clock, and decode
+**several bursts that overlap in time in the same band**.
 
 | Term | Meaning |
 |---|---|
-| Bin | A 31.25 Hz slice of the audio passband. All tone frequencies lie on the bin grid. |
-| Tone | One of 16 audio frequencies in a lane, numbered 0..15 from the lowest. |
-| Lane | A 500 Hz wide sub-channel holding 16 tones. Up to 4 lanes fit in a 300–2700 Hz SSB passband. |
-| Symbol | One tone transmitted for one symbol period. Carries 4 coded bits. |
-| Profile | The symbol period: **F** (fast, 32 ms) or **S** (slow, 160 ms). |
+| Tone | One of 64 audio frequencies spanning 300–2700 Hz, numbered 0..63. |
+| Symbol | One tone transmitted for one symbol period. Carries one GF(64) code symbol, 6 bits. |
+| Profile | The symbol period: **F** (fast, 26.67 ms) or **S** (slow, 160 ms). |
 | Preamble | The fixed 24-symbol sequence that starts every burst. |
-| Block | One LDPC codeword on air, with its 4 pilot symbols. |
+| Block | One LDPC codeword on air (128 symbols) with its 4 pilot symbols. |
 | Burst | One transmission: preamble followed by 1..8 blocks. |
 | Frame | The decoded content of a burst: a message, an ACK or a beacon. |
-| Long frame | A message burst, built from (512,256) blocks. |
-| Short frame | An ACK or beacon burst, one (256,128) block. |
+| Long frame | A message burst. Short frame: an ACK or beacon, always one block. |
 
 Bit strings are written most significant bit first. Bit fields are packed in
-the order listed, MSB first, with no padding unless stated.
+the order listed, MSB first.
 
 ## 2. Properties
 
 | Property | Profile F | Profile S |
 |---|---|---|
-| Occupied bandwidth (99 % power) | 500 Hz | 500 Hz |
-| Tones | 16 at 31.25 Hz spacing | same |
-| Symbol period | 32 ms | 160 ms |
-| Symbol rate | 31.25 Bd | 6.25 Bd |
-| Raw bit rate | 125 bit/s | 25 bit/s |
-| Coded bit rate (after rate 1/2 LDPC) | 62.5 bit/s | 12.5 bit/s |
-| Net text rate, 4-block message | ≈ 46 bit/s ≈ 13 char/s | ≈ 9 bit/s ≈ 2.7 char/s |
-| Sensitivity, AWGN, 50 % decode, theory | −12.5 dB | −19.5 dB |
-| Sensitivity, AWGN, 50 % decode, **measured** (`fika sim`, v0.1) | −11.5 dB | −18.7 dB |
-| Sensitivity, Watterson CCIR moderate, measured | ≈ −7 dB | not yet measured |
-| Sensitivity, Watterson CCIR good (slow selective fade), measured | ≈ −6 dB | not yet measured |
-| Maximum message | 8 blocks, 1701 payload bits, about 240 characters of ordinary text | same |
-| Airtime, 40-character message | 5.0 s | 25 s |
-| Airtime, 240-character message | 17.7 s | 88 s |
-| Airtime, ACK or beacon | 2.9 s | 14.7 s |
-| Lanes per 300–2700 Hz passband | 4 | 4 |
-| Concurrent stations per lane | 1 at equal power. A stronger station decodes through an overlap of ≥ 6 dB; the weaker one after successive cancellation. Partial overlap of ≤ 20 % of a block is tolerated at equal power. | same |
-| Frequency tolerance | ±62.5 Hz search range, ±20 Hz recommended | same |
+| Occupied bandwidth | 2400 Hz (300–2700 Hz) | same |
+| Tones | 64 at 37.5 Hz spacing | same |
+| Symbol period / rate | 26.67 ms, 37.5 Bd | 160 ms, 6.25 Bd |
+| Raw bit rate | 225 bit/s | 37.5 bit/s |
+| Coded bit rate (rate-1/2 LDPC) | 112.5 bit/s | 18.75 bit/s |
+| Block airtime (132 symbols) | 3.52 s | 21.1 s |
+| Sensitivity, AWGN, 50 % decode, **measured** (`fika sim`) | **−10.2 dB** | **−19.3 dB** |
+| Sensitivity, theory (symbol-level capacity + code) | −10.9 dB | −18.7 dB |
+| Simultaneous senders in one band, equal power, measured | 2, 3 and 4 at 100 % (−6 dB each); 3 at 100 % at −8 dB | not yet measured |
+| Senders 10 dB apart, weak at −8 dB, measured | weak decodes 95 % | not yet measured |
+| Maximum message | 8 blocks, 2725 payload bits, about 240 characters of ordinary text | same |
+| Airtime, 40-character message (1 block) | 4.2 s | 25 s |
+| Airtime, 240-character message (2 blocks) | 7.7 s | 46 s |
+| Airtime, ACK or beacon | 4.2 s | 25 s |
+| Frequency tolerance | ±75 Hz search, ±20 Hz recommended | same |
 | Clock requirement | none | none |
-| FEC | CCSDS TC (512,256) long, (256,128) short, soft BP | same |
-| Text coding | order-1 adaptive range coder, ≈ 2.5 bit/char | same |
+| FEC | GF(64) LDPC, n = 128, k = 64, dv = 2, dc = 4 | same |
+| Text coding | order-1 adaptive range coder | same |
 
-Theory figures are derived in Section 8. Measured figures come from the
-simulator in `crates/fika-cli` (`fika sim`, 20 trials per point, 2-block
-message) and are about 1 dB behind theory on AWGN. Selective fading costs
-more: with two equal paths the lane sits in a notch for whole bursts, and
-retries, not the modem, are the remedy.
+SNR is referenced to a 2500 Hz bandwidth, as FT8 reports it. Measured figures
+come from the simulator in `crates/fika-cli` with the default thresholds.
 
-## 3. Lane and tone plan
+## 3. Tone plan
 
-### 3.1 Tone frequencies
+### 3.1 Frequencies
 
-Tone `k` (0..15) of lane `L` (0..3) is at
+    f(k) = 318.75 + 37.5 · k   Hz,   k = 0..63
 
-    f(L, k) = 437.5 + 562.5 · L + 31.25 · k   Hz
+The comb is centred on 1500 Hz; tone 0 minus half a spacing is 300 Hz and
+tone 63 plus half a spacing is 2700 Hz. Transmitters and receivers MUST use
+the rig's widest data filter (IC-705 "wide", FT-891 3000 Hz). A 2.4 kHz
+filter attenuates the outer tones by 1–3 dB, which the per-bin normalisation
+of §8.2 tolerates.
 
-All tones lie on the 31.25 Hz bin grid (437.5 Hz = bin 14). Lane pitch is
-562.5 Hz = 18 bins: 16 tone bins and 2 guard bins (62.5 Hz).
-
-| Lane | Tone 0 | Tone 15 | Centre | Occupied span (±half bin) |
-|---|---|---|---|---|
-| 0 | 437.50 | 906.25 | 671.875 | 421.9 – 921.9 |
-| 1 | 1000.00 | 1468.75 | 1234.375 | 984.4 – 1484.4 |
-| 2 | 1562.50 | 2031.25 | 1796.875 | 1546.9 – 2046.9 |
-| 3 | 2125.00 | 2593.75 | 2359.375 | 2109.4 – 2609.4 |
-
-Margins to a 300–2700 Hz passband: 122 Hz below lane 0, 91 Hz above lane 3.
-
-A transmitter MUST use one lane for an entire burst. A receiver MUST monitor
-all four lanes.
+All tones lie on the 37.5 Hz grid, which at the 12 kHz receiver rate is
+exactly 320 samples per fast symbol.
 
 ### 3.2 Pulse shaping
 
-The instantaneous frequency is the tone sequence convolved with the FT8-style
+The instantaneous frequency is the tone sequence convolved with the
 Gaussian pulse
 
     p(t) = ½ [ erf(κ (t + ½)) − erf(κ (t − ½)) ],   κ = π · sqrt(2 / ln 2) · BT
 
-with `BT = 2.0` and `t` in units of **32 ms for both profiles**. The pulse
-support is 3 units (96 ms). In profile S the tone is therefore held flat for
-most of the 160 ms symbol and only the 32 ms around each transition is shaped.
-`BT` MUST NOT be scaled with the symbol period.
-
-The phase MUST be continuous across tone changes and the amplitude MUST be
-constant for the whole burst, apart from the ramps in Section 11.
-
-Resulting spectrum: 99 % of power within 500 Hz including shaping skirts,
-about −40 dBc one bin outside the outer tones, below −60 dBc beyond about
-90 Hz outside. The −60 dB bandwidth of roughly 570 Hz is absorbed by the
-62.5 Hz guard bins.
+with `BT = 2.0` and `t` in units of **one fast symbol (26.67 ms) for both
+profiles**. In profile S the tone is held flat for most of the 160 ms symbol;
+only the 26.67 ms around each transition is shaped. The phase MUST be
+continuous and the amplitude constant for the whole burst apart from
+raised-cosine ramps of one unit at each end.
 
 ### 3.3 Frequency error
 
-The receiver searches ±2 bins (±62.5 Hz) around each lane's nominal tone 0. A
-transmitter SHOULD be within ±20 Hz of nominal. Up to ±31 Hz of error moves
-the outer tone into the guard band, not into the neighbouring lane.
+The receiver searches ±2 tones (±75 Hz) around nominal. A transmitter SHOULD
+be within ±20 Hz.
 
 ## 4. Symbols and profiles
 
-| Profile | Symbol period T_s | Samples at 12 kHz | Samples at 48 kHz |
+| Profile | Symbol period | Samples at 12 kHz | Samples at 48 kHz |
 |---|---|---|---|
-| F | 32 ms | 384 | 1536 |
-| S | 160 ms | 1920 | 7680 |
+| F | 26.67 ms (1 unit) | 320 | 1280 |
+| S | 160 ms (6 units) | 1920 | 7680 |
 
-Tone spacing is 31.25 Hz in both profiles: modulation index 1 in F and 5 in S.
-Every symbol carries 4 coded bits `b0 b1 b2 b3` (MSB first) as the data value
-`d = 8·b0 + 4·b1 + 2·b2 + b3`.
+Every data symbol carries one GF(64) code symbol `d` (6 bits, MSB first in
+the byte stream of §9). A burst uses one profile throughout. A receiver MUST
+run the detectors for both profiles.
 
-A burst uses one profile throughout. A receiver MUST run the detectors for
-both profiles on every lane.
-
-## 5. Hop pattern
+## 5. Hop pattern and preamble sequences
 
 ### 5.1 Sequences
 
-Three Welch Costas arrays of order 16 from the prime 17, with different
-primitive roots `g`:
+Three Welch Costas arrays of order 16 from the prime 17 mark the preamble
+parts, and one order-64 array drives the data hop:
 
     W_g[i] = (g^i mod 17) − 1,   i = 0..15
+    LONG  = W_3 = [0, 2, 8, 9, 12, 4, 14, 10, 15, 13, 7, 6, 3, 11, 1, 5]
+    SHORT = W_6 = [0, 5, 1, 11, 3, 6, 7, 13, 15, 10, 14, 4, 12, 9, 8, 2]
+    PILOT = W_7 = [0, 6, 14, 2, 3, 10, 8, 11, 15, 9, 1, 13, 12, 5, 7, 4]
 
-    C = W_3 = [0, 2, 8, 9, 12, 4, 14, 10, 15, 13, 7, 6, 3, 11, 1, 5]   (long SYNC, data hop)
-    S = W_6 = [0, 5, 1, 11, 3, 6, 7, 13, 15, 10, 14, 4, 12, 9, 8, 2]   (short SYNC)
-    P = W_7 = [0, 6, 14, 2, 3, 10, 8, 11, 15, 9, 1, 13, 12, 5, 7, 4]   (PHASE, pilots)
+    H64: y_i = 4 · 2^i mod 67 for i = 0..65, keep y ≥ 3, x = y − 3 (64 values)
+    H64 = [1, 5, 13, 29, 61, 58, 52, 40, 16, 35, 6, 15, 33, 2, 7, 17, 37, 10,
+           23, 49, 34, 4, 11, 25, 53, 42, 20, 43, 22, 47, 30, 63, 62, 60, 56,
+           48, 32, 0, 3, 9, 21, 45, 26, 55, 46, 28, 59, 54, 44, 24, 51, 38,
+           12, 27, 57, 50, 36, 8, 19, 41, 18, 39, 14, 31]
 
-Each is a permutation of 0..15 with the Costas property: its two-dimensional
-aperiodic autocorrelation is at most 1 for every non-zero shift in time and
-frequency. Because the Welch construction is singly periodic, every cyclic
-time shift of one of them is also a Costas array, and two distinct shifts of
-the same array agree in at most one position.
+All four are Costas arrays: their two-dimensional aperiodic autocorrelation
+is at most 1 for every non-zero shift. The order-16 arrays are laid on the
+64-tone band scaled by 4 with a residue that keeps the three roles on
+disjoint tone sets:
 
-The three arrays are chosen so that any cyclic shift of one has at most 4
-coincidences with another under any time and frequency shift (C–S: 2, C–P:
-3, S–P: 4). Note that `15 − C` is **not** a usable second sequence: for a
-Welch array it equals `C` cyclically shifted by 8, so it half-matches `C`.
+    long SYNC tone   = 4 · LONG[n]
+    short SYNC tone  = 4 · SHORT[n] + 2
+    PHASE/pilot tone = 4 · PILOT[(n + φ) mod 16] + 1
 
 ### 5.2 Pattern phase
 
-Every burst has a pattern phase `φ` in 0..15.
-
-- For message and beacon bursts the transmitter MUST draw `φ` uniformly at
-  random per burst.
-- For ACK bursts `φ = msg_id mod 16` of the message being acknowledged.
+Every burst has a pattern phase `φ` in 0..15, drawn uniformly at random per
+burst (ACKs use `φ = msg_id mod 16`).
 
 ### 5.3 Data and pilot symbol mapping
 
-Number the symbols after the preamble `m = 0, 1, 2, ...`, counting pilot
-symbols. The transmitted tone for a data symbol `m` with value `d_m` is
+Number the symbols after the preamble `m = 0, 1, 2, ...`, pilots included.
 
-    t_m = ( d_m + C[(m + φ) mod 16] ) mod 16
-
-The four pilot symbols at the start of each block carry no data and use the
-pilot sequence directly:
-
-    t_m = P[(m + φ) mod 16]
-
-The receiver inverts the data mapping after estimating `φ` from the preamble.
+    data tone  t_m = ( d_m + H64[(m + 4φ) mod 64] ) mod 64
+    pilot tone t_m = 4 · PILOT[(m + φ) mod 16] + 1
 
 ### 5.4 What the pattern guarantees
 
-- Two overlapping preambles with different `φ` or different timing coincide
-  on at most one symbol of sixteen, so both are detected and timed
-  independently.
-- A narrowband interferer hits a different data value every symbol, so it
-  appears to the decoder as random erasures rather than a stuck bit position.
-- Data symbols of two overlapping bursts are effectively random with respect
-  to each other. An interferer of comparable power creates a second energy
-  peak on every overlapped symbol, which destroys about 2 of the 4 coded bits
-  of that symbol. The pattern does not orthogonalise data; it randomises the
-  damage and makes successive cancellation possible. See Section 2 for the
-  resulting limits.
+Overlapping preambles with different `φ` or timing coincide on at most one
+SYNC symbol, so each is detected and timed separately. Data tones of
+different bursts are effectively random with respect to each other; what
+makes overlapping bursts decodable is the symbol-level decoding of §8, not
+the hop pattern. The hop additionally turns a steady interferer into
+scattered erasures and spreads every burst over the whole band for frequency
+diversity.
 
 ## 6. Preamble and synchronisation
 
 ### 6.1 Structure
 
-Every burst begins with 24 symbols in the burst's profile:
-
 | Part | Symbols | Tone of symbol n |
 |---|---|---|
-| SYNC | 16 (n = 0..15) | `C[n]` for a long frame, `S[n]` for a short frame |
-| PHASE | 8 (n = 0..7) | `P[(n + φ) mod 16]` |
+| SYNC | 16 | `4·LONG[n]` (long) or `4·SHORT[n] + 2` (short) |
+| PHASE | 8 | `4·PILOT[(n + φ) mod 16] + 1` |
 
-SYNC is independent of `φ`, so timing and frequency are found first; PHASE
-then identifies `φ`. Any two values of `φ` differ in at least 7 of the 8 PHASE
-positions.
-
-Preamble airtime: 0.768 s in F, 3.84 s in S.
+Airtime 0.64 s (F), 3.84 s (S).
 
 ### 6.2 Coarse detection
 
-The receiver maintains for each profile a normalised energy matrix `Ẽ[frame,
-bin]` (Section 10), clipped at 20 for this step. For each lane, each profile,
-each sequence in {C, S}, each candidate frequency offset `ν` within ±2 bins
-and each candidate start time `τ`, it computes
+For each profile the receiver maintains a normalised energy matrix
+`Ẽ[frame, bin]` (§10), clipped at 20 for this step. For each sequence in
+{LONG, SHORT}, each frequency offset `ν` within ±2 tones (quarter-tone steps
+in F, twelfth-tone steps in S) and each start frame `τ` (quarter-symbol
+steps):
 
-    Z(τ, ν, seq) = Σ_{n=0..15} Ẽ[τ + n·T_s, ν + seq[n]]
+    Z(τ, ν, seq) = Σ_{n=0..15} Ẽ[τ + n·T_s, ν + tone(seq, n)]
 
-Time steps are T_s/4 and frequency steps are one quarter bin (F) or one tenth
-bin (S).
+Candidates have `Z ≥ 40` (noise mean 16, σ 4).
 
-Under noise alone `Ẽ` is approximately exponential with unit mean, so `Z` is
-Gamma(16, 1): mean 16, standard deviation 4. A detection threshold of
-`Z ≥ 40` gives a false-alarm probability near 5·10⁻⁶ per test, about one
-false preamble per hundred seconds per lane, each costing one failed LDPC
-decode. At the decode threshold (Es/N0 ≈ 6.5 dB) the mean of `Z` is about 88
-with standard deviation 13, so the miss probability is negligible. Preamble
-detection is not the sensitivity limit.
+### 6.3 Fine pass
 
-### 6.3 Fine pass and refinement
+On unclipped energies, every candidate MUST pass:
 
-The clipped sums saturate for any sequence when a signal is strong or the
-input is noiseless, so every coarse candidate MUST be re-examined on the
-unclipped energies:
+1. Re-find the peak `Z_u` within ±1 symbol and the whole frequency range.
+2. **Peak test:** `Z_u ≥ 2.0 ×` the larger of `Z_u` one symbol earlier and later.
+3. **Support test:** at least 11 of the 16 SYNC cells at or above a quarter of their mean.
+4. **Median test:** the median of the 16 cells at least 2.5 (noise median ≈ 0.7).
+5. Parabolic interpolation of `τ` and `ν`; then suppress other candidates of
+   the same kind within ±1 symbol and ±1 tone (only).
+6. **PHASE:** score all 16 `φ` on unclipped energies clipped at twice the
+   mean SYNC peak; report **every** `φ` whose score is at least
+   `8·(1 + 0.5·γ̂)` and at least 0.6 × the best, so two bursts keyed within a
+   symbol yield two detections.
+7. **Timing:** refine `τ` in the sample domain over ±1/8 symbol in steps of
+   1/64 symbol by the summed energy of the 16 SYNC tones.
 
-1. Re-find the peak `Z_u(τ, ν)` of the unclipped SYNC sum within ±1 symbol
-   of the coarse time and over the whole ±2 bin frequency range.
-2. **Peak test:** `Z_u` at the peak MUST be at least 2.0 times the larger of
-   `Z_u` one symbol earlier and one symbol later (and at least 2.0 × 16).
-3. **Support test:** at least 9 of the 16 SYNC bins MUST be at or above a
-   quarter of their mean. A chance match of data symbols lights a handful of
-   bins however strong the signal; a preamble lights nearly all of them.
-4. Interpolate `τ` and `ν` parabolically around the peak.
-5. Suppress candidates within 16 symbols of a stronger (by `Z_u`) accepted
-   candidate in the same lane.
-6. **PHASE:** evaluate the PHASE sum for all 16 `φ` at the refined `(τ, ν)`
-   on unclipped energies clipped at twice the mean SYNC peak, and accept the
-   maximum if it is at least 1.5 times the second best.
-7. **Timing:** refine `τ` in the sample domain by scanning ±1/8 symbol in
-   steps of 1/64 symbol for the maximum summed energy of the 16 SYNC tones
-   (Goertzel at the exact offset). The frame grid alone is good to a few
-   percent of a symbol, which costs about a decibel.
+`γ̂ = Z_u / 16 − 1`; the reported Es/N0 is `1.38·γ̂` (empirical calibration).
 
-The SNR estimate is `Es/N0 = 1.38 · (Z_u / 16 − 1)`; the factor is an
-empirical calibration for grid misalignment and the Gaussian transitions,
-and brings the reported value within 0.3 dB of the set value on AWGN.
+### 6.4 Profile and kind
 
-### 6.4 Profile and frame type
-
-Profile is distinguished by symbol rate alone: the F detector sees an S
-preamble as runs of five identical tones and scores at most 2–3 Costas hits;
-the S detector sees an F preamble spread over five tones per frame. Frame
-type (long or short) is given by which sequence, `C` or `S`, matched.
+Profile is told apart by symbol rate: each detector scores the other
+profile's preamble poorly. Kind is told apart by which sequence matched.
 
 ### 6.5 Tracking
 
-Each block begins with 4 pilot symbols whose tones `P[(m + φ) mod 16]` are
-known once `φ` is known. After each successfully decoded
-block the receiver SHOULD re-encode the block, giving all 132 tones, and
-re-estimate `τ` and `ν` by maximising energy over them, bounded to ±T_s/4 and
-±1/4 bin per block. This tracking is REQUIRED for bursts longer than one
-block: a sound card clock error of 100 ppm walks timing by about 9 ms over an
-88 s burst, and profile S needs frequency within about 1.5 Hz.
+Each block begins with 4 pilot symbols. After each successfully decoded block
+the receiver SHOULD re-estimate `τ` and `ν` from the re-encoded block,
+bounded to ±T_s/4 and ±1/4 tone per block.
 
 ## 7. Blocks and frames
 
-### 7.1 Codes
+### 7.1 Code
 
-| Frame | Code | Info bits | Coded bits | Data symbols | Pilots | Symbols per block |
-|---|---|---|---|---|---|---|
-| Long | CCSDS TC (512,256) | 256 | 512 | 128 | 4 | 132 |
-| Short | CCSDS TC (256,128) | 128 | 256 | 64 | 4 | 68 |
-
-These are the telecommand codes as implemented in the `labrador-ldpc` crate.
-Coded bits are mapped to symbols 4 at a time, MSB first, after the interleaver
-in Section 8.3.
-
-Block airtime: long 4.224 s (F) / 21.12 s (S); short 2.176 s (F) / 10.88 s (S).
+One code for all frames: the GF(64) LDPC of §8.1 with n = 128 coded symbols
+and k = 64 information symbols = **384 bits = 48 bytes** per block. Block on
+air = 4 pilots + 128 data symbols = 132 symbols: 3.52 s (F), 21.1 s (S).
 
 ### 7.2 Burst layout
 
-    preamble (24) | block 0 (132 or 68) | block 1 (132) | ... | block N−1
+    preamble (24) | block 0 (132) | block 1 (132) | ... | block N−1
 
-Blocks follow each other with no gap. Block `k` of a long frame starts
-`24 + 132·k` symbols after the burst start. A long frame has 1..8 blocks; a
-short frame has exactly one.
+Blocks follow each other with no gap. Block `k` starts `24 + 132·k` symbols
+after the burst start. Long frames have 1..8 blocks; short frames one.
 
 ### 7.3 Long frame, block 0 (message header)
 
 | Field | Bits | Meaning |
 |---|---|---|
-| ver | 2 | Protocol version, 0 for this document |
-| type | 3 | 0 = message. 1 and 2 are used by short frames. 3–7 reserved |
-| sender | 28 | Sender callsign, Section 9.1 |
+| ver | 2 | 0 |
+| type | 3 | 0 = message, 1 = ACK, 2 = beacon, 3–7 reserved |
+| sender | 28 | Sender callsign, §9.1 |
 | dest_type | 2 | 0 = all, 1 = group, 2 = callsign, 3 reserved |
-| dest | 28 | Group ID, packed callsign, or 0 for all |
-| msg_id | 16 | Random per message, drawn by the sender |
-| total | 3 | Number of blocks in the burst minus 1 (0..7) |
-| hop | 2 | Hop count, MUST be 0 in version 0 |
+| dest | 28 | Group ID, packed callsign, or 0 |
+| msg_id | 16 | Random per message |
+| total | 3 | Number of blocks minus 1 |
+| hop | 2 | MUST be 0 in version 0 |
 | flags | 2 | bit 1: ack_req; bit 0: raw_text |
-| payload | 154 | Start of the text payload, Section 9.4 |
-| crc | 16 | CRC-16 over the preceding 240 bits |
+| payload | **282** | Start of the text payload, §9.4 |
+| crc | 16 | CRC-16 over the preceding 368 bits |
 
-Total 256 bits.
+### 7.4 Long frame, blocks 1..7
 
-### 7.4 Long frame, blocks 1..7 (continuation)
+| Field | Bits |
+|---|---|
+| seq | 3 |
+| msg_id | 16 |
+| payload | **349** |
+| crc | 16 |
 
-| Field | Bits | Meaning |
-|---|---|---|
-| seq | 3 | Block index 1..7 |
-| msg_id | 16 | Same as block 0 |
-| payload | 221 | Continuation of the text payload |
-| crc | 16 | CRC-16 over the preceding 240 bits |
+Payload capacity by block count: 282, 631, 980, 1329, 1678, 2027, 2376,
+2725 bits.
 
-Total 256 bits. Continuation blocks are bound to block 0 by contiguous timing
-and matching `msg_id`. If block 0 fails, continuation blocks MAY be shown as a
-partial message from an unknown sender.
+### 7.5 Short frames
 
-Payload capacity by block count: 154, 375, 596, 817, 1038, 1259, 1480, 1701
-bits.
+ACK: ver 2 | type 3 | sender 28 | dest 28 | msg_id 16 | snr 6 | reserved 285
+| crc 16. Beacon: ver 2 | type 3 | sender 28 | grid 15 | group_tags 24 |
+status 4 | reserved 292 | crc 16. Reserved bits MUST be 0.
 
-### 7.5 Short frame: ACK
+### 7.6 CRC
 
-| Field | Bits | Meaning |
-|---|---|---|
-| ver | 2 | 0 |
-| type | 3 | 1 |
-| sender | 28 | Acknowledging station |
-| dest | 28 | Original sender |
-| msg_id | 16 | Message being acknowledged |
-| snr | 6 | Received SNR, two's complement, −32..+31 dB in 1 dB steps |
-| reserved | 29 | MUST be 0 |
-| crc | 16 | CRC-16 over the preceding 112 bits |
+CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflection) over the
+preceding fields MSB first. A block whose CRC fails MUST be discarded.
 
-### 7.6 Short frame: beacon
+### 7.7 Worked airtime
 
-| Field | Bits | Meaning |
-|---|---|---|
-| ver | 2 | 0 |
-| type | 3 | 2 |
-| sender | 28 | Beaconing station |
-| grid | 15 | 4-character Maidenhead locator, FT8 packing; 32767 = none |
-| group_tags | 24 | Two 12-bit truncated group IDs the station is listening to; 0 = none |
-| status | 4 | 0 = listening, 1 = away, others reserved |
-| reserved | 36 | MUST be 0 |
-| crc | 16 | CRC-16 over the preceding 112 bits |
-
-### 7.7 CRC
-
-CRC-16/CCITT-FALSE: polynomial 0x1021, initial value 0xFFFF, no input or
-output reflection, no final XOR, computed over the field bits in order,
-MSB first. A block whose CRC fails MUST be discarded.
-
-### 7.8 Worked airtime
-
-Text at 2.5 bit/char plus about 6 bits of termination:
-
-| Message | Payload bits | Blocks | Airtime F | Airtime S |
+| Message | Bits | Blocks | F | S |
 |---|---|---|---|---|
-| 40 chars | ≈ 106 | 1 | 0.768 + 4.224 = 5.0 s | 3.84 + 21.12 = 25.0 s |
-| 240 chars | ≈ 606 | 4 | 0.768 + 16.9 = 17.7 s | 3.84 + 84.5 = 88.3 s |
-| ACK / beacon | 128 | 1 short | 0.768 + 2.176 = 2.9 s | 3.84 + 10.88 = 14.7 s |
+| 40 chars | ≈ 106 | 1 | 0.64 + 3.52 = 4.2 s | 3.84 + 21.1 = 25 s |
+| 240 chars | ≈ 606 | 2 | 0.64 + 7.04 = 7.7 s | 46 s |
+| ACK / beacon | 384 | 1 | 4.2 s | 25 s |
 
-## 8. Forward error correction
+## 8. Forward error correction and demodulation
 
-### 8.1 Encoding
+### 8.1 Code
 
-Information bits are encoded with the systematic CCSDS TC code of Section 7.1.
-The 512 (or 256) coded bits are interleaved (8.3) and then grouped into
-4-bit data values.
+A non-binary LDPC code over GF(2^6) with field polynomial x^6 + x + 1,
+n = 128, k = 64, every variable node of degree 2 and every check node of
+degree 4. Its Tanner graph is the line graph of a 4-regular *check graph* on
+64 vertices built by progressive edge growth to girth 6; edge coefficients
+are drawn so that no check-graph cycle of length ≤ 8 has a coefficient-ratio
+product of 1. Construction is deterministic from the seed `0x6f696b61` with
+the splitmix64 generator in `crates/fika-nb/src/rng.rs`; the information set
+and systematic generator follow from Gaussian elimination over GF(64). The
+code is thus a pure function of this specification. (A frozen table will
+replace the procedure in a later revision.)
 
-### 8.2 Soft demodulation
+Encoding: the 48 payload bytes are split MSB first into 64 six-bit symbols;
+the 64 parity symbols are appended at the code's parity positions.
 
-For each data symbol the receiver computes the energy `e_t` in each of the 16
-tone positions at the estimated `(τ, ν)`. Each tone bin is normalised by its
-own noise level `n_t`, the 75th percentile of that bin's energy over the
-block divided by ln 4: because the hop places the wanted signal on any one
-bin only one symbol in sixteen, this measures the bin's noise plus whatever
-interferer sits on it, so a carrier or keyed CW inside the lane becomes a
-quiet bin instead of winning every decision. The receiver then undoes the
-hop offset to recover energies per data value `s_d = e_t / n_t` and forms
-per-bit log-likelihood ratios:
+An opt-in rate-1/3 "crowd" code (n = 192, k = 64, dc = 3, seed
+`0x63726f77`) is defined for later use; it is not transmitted by this
+version.
 
-    L_b = max_{d : bit_b(d) = 0} s_d − max_{d : bit_b(d) = 1} s_d
+### 8.2 Symbol likelihoods
 
-A receiver MAY use the exact log-sum-exp form instead of max. LLRs are
-passed to a belief-propagation decoder with at most 50 iterations. A block
-is accepted only if the CRC verifies. On failure the receiver SHOULD retry
-with up to 3 neighbouring `(τ, ν)` hypotheses.
+For each data symbol the receiver computes the energy `E_t` in each of the
+64 tone positions at the estimated `(τ, ν)`. Each tone bin is normalised by
+its own noise level `n_t`, the 75th percentile of that bin's energy over the
+block divided by ln 4: the hop places the wanted signal on any one bin only
+one symbol in 64, so this measures the bin's noise plus whatever interferer
+sits on it. With `e_t = E_t / n_t`, `γ̂` the block's mean peak minus one,
+capped at 15 dB, and `q̂` the fraction of cells above four times the noise
+beyond one per symbol (floor 1/64):
 
-A symbol known to be corrupted (for example blanked by successive
-cancellation) is given all-zero LLRs.
+    ℓ_t = ln I0(2·sqrt(γ̂·e_t)) − γ̂
+    L_t = ℓ_t − ln(1 − q̂ + q̂·e^{ℓ_t})
+    P(d) ∝ exp(L_{tone(d)})
 
-### 8.3 Interleaver
+`L_t` saturates at ln(1/q̂): two equal peaks split the posterior, and a much
+stronger peak gets no more credit than the wanted one. The hop offset is
+removed by permuting the vector, and the 128 vectors go to the decoder.
 
-The coded bits of a long block are written row by row into a 16 × 32 array
-and read column by column before symbol mapping; a short block uses 16 × 16.
-This spreads a run of lost symbols across the codeword. The same interleaver
-is used in both profiles.
+### 8.3 Decoding
+
+Sum-product belief propagation over GF(64): messages are probability
+vectors; check nodes permute by the edge coefficient, Walsh–Hadamard
+transform, multiply, inverse transform (in f64), and un-permute. At most 50
+iterations; a codeword is accepted only if all 64 checks are satisfied, and
+the frame only if its CRC verifies.
 
 ## 9. Content coding
 
 ### 9.1 Callsigns
 
-Standard callsigns are packed into 28 bits using the FT8 six-character index
-(Franke, Somerville and Taylor, "The FT4 and FT8 Communication Protocols",
-QEX July/August 2020) **without** FT8's token and hash offsets, giving values
-below 262 177 560 = 37·36·10·27³. Values from 262 177 560 upward are reserved: a callsign
-that cannot be packed MUST be sent as 262 177 560 plus the low 22 bits of
-the FNV-1a 32-bit hash of its uppercase ASCII text. Receivers display such a
-sender as the hash in angle brackets until the full callsign is learned from
-message text.
+Standard callsigns are packed into 28 bits using the FT8 six-character
+index (Franke, Somerville and Taylor, QEX July/August 2020) without FT8's
+token and hash offsets, giving values below 262 177 560 = 37·36·10·27³.
+Other callsigns are sent as 262 177 560 plus the low 22 bits of the FNV-1a
+hash of their uppercase ASCII text.
 
 ### 9.2 Groups
 
-A group is named by the user as free text. Its on-air ID is the low 28 bits
-of the FNV-1a 32-bit hash of the name in Unicode NFC form, lower-cased,
-encoded as UTF-8. Beacons carry the low 12 bits of the same hash as a tag.
+The on-air group ID is the low 28 bits of FNV-1a over the NFC, lower-cased,
+UTF-8 group name; beacons carry its low 12 bits.
 
 ### 9.3 Message ID
 
-`msg_id` is 16 random bits drawn by the sender per message. The pair
-`(sender, msg_id)` identifies a message for de-duplication and
-acknowledgement. Receivers MUST keep the pair for at least one hour.
+16 random bits per message. `(sender, msg_id)` identifies a message for
+de-duplication and acknowledgement; receivers keep it for at least an hour.
 
 ### 9.4 Text payload
 
-#### Alphabet
-
-A 7-bit symbol alphabet of about 120 entries: ASCII 0x20–0x7E, newline, the
-letters å ä ö Å Ä Ö é É ü Ü ø Ø æ Æ, the characters € – “ ” ’ …, plus three
-control symbols ESC, REP and EOT. The exact table is normative and is
-published as an appendix once the prior model (below) is frozen.
-
-#### Coder
-
-A 32-bit range coder with an order-1 adaptive model: one 128-entry frequency
-table per preceding symbol, initialised from a static prior table that is
-part of this specification, incremented by 24 per occurrence, and halved when
-its total exceeds 4096. The halving bounds any symbol's cost to 12 bits.
-
-Code points outside the alphabet are sent as ESC followed by a 21-bit code
-point, coded as raw bits. REP re-emits the previously escaped code point, so
-runs of the same emoji are cheap. Multi-code-point emoji sequences are
-successive escapes.
-
-The payload ends with EOT, then the coder is flushed with 2 bits, then the
-block is padded with zeros.
-
-#### Bound and fallback
-
-The sender MUST also compute the raw UTF-8 byte length. If the coded payload
-exceeds 8 bits per byte, the sender MUST set `raw_text` and send the UTF-8
-bytes uncoded, followed by a zero byte. A payload MUST NOT exceed 1701 bits
-in either form; the user interface SHOULD show the block count before
-sending. "240 characters" is the typical limit for ordinary text, not a
-guarantee for arbitrary content.
-
-#### Prior model
-
-The static prior is derived from an English and Swedish chat corpus. Until it
-is published, implementations MUST use a uniform prior; this costs about one
-bit per character and is interoperable as long as both ends use the same
-table. The published table will be versioned by `ver`.
+A 32-bit range coder with an order-1 adaptive model over a 119-symbol
+alphabet (ASCII, newline, Nordic letters and common punctuation, plus ESC,
+REP, EOT), initialised from the static prior table in
+`crates/fika-proto/src/prior.rs`, increment 24, halving above 4096. Code
+points outside the alphabet are ESC plus 21 raw bits; REP repeats the last
+escaped code point. The payload ends with EOT and two flush bits. If the
+coded payload exceeds 8 bits per UTF-8 byte the sender sets `raw_text` and
+sends the UTF-8 bytes followed by a zero byte. A payload MUST NOT exceed
+2725 bits.
 
 ## 10. Receiver reference pipeline
 
-1. Capture audio with cpal at 48 kHz mono and decimate by 4 with a polyphase
-   FIR to 12 kHz. 12 000 / 31.25 = 384, so symbol periods are integer sample
-   counts.
-2. Energy matrix, profile F: rectangular window of 384 samples, zero-padded
-   to 1536 points (7.8125 Hz bins, 4 per tone), hop 96 samples (8 ms). 125
-   FFTs per second.
-3. Energy matrix, profile S: window 1920, zero-padded to 3840 (3.125 Hz, 10
-   per tone), hop 480 (40 ms). 25 FFTs per second.
-4. Keep bins covering 300–2700 Hz. Ring buffers of 30 s (F) and 150 s (S),
-   about 8 MB of f32 in total.
-5. Per-bin baseline: 30th percentile over blocks of 8 s (F) / 40 s (S),
-   scaled by 1/−ln(0.7) so noise has unit mean, floored at a thousandth of
-   that bin's own maximum in the block and of the global mean (so clean,
-   noiseless input stays finite and spectral leakage stays below the clip).
-   `Ẽ = E / baseline`; the coarse detector clips at 20, the fine pass does not.
-6. Preamble search as in Section 6 on every new column.
-7. On detection: re-extract the burst's 12 kHz samples, mix by `−ν̂`, compute
-   the 16 tone energies per symbol with Goertzel filters at `τ̂`, demodulate
-   and decode block by block, tracking as in 6.5. Continue until `total`
-   blocks are decoded, 8 blocks have elapsed, or the lane energy vanishes.
-8. Successive cancellation (OPTIONAL): after decoding a burst, blank its 132
-   tone positions per block in the energy matrix and re-run the search, so a
-   weaker overlapping burst can be found.
+1. Audio at 12 kHz (decimate from 48 kHz by 4, or capture at 12 kHz).
+2. Energy matrix F: window 320, zero-padded to 1280 (9.375 Hz bins, 4 per
+   tone), hop 80. S: window 1920 → 3840 (3.125 Hz, 12 per tone), hop 480.
+3. Per-bin baseline: 30th percentile over 8 s (F) / 40 s (S) blocks scaled
+   by 1/−ln 0.7, floored at a thousandth of the bin's maximum and of the
+   global mean.
+4. Detection as §6; demodulation as §8 with tone energies from 64 complex
+   correlations over the symbol (320 samples).
+5. Overlapping bursts are decoded independently; successive cancellation
+   (decode the strongest, blank or subtract it, decode the rest) is
+   OPTIONAL and specified in a later revision.
 
-Estimated load on one Raspberry Pi 4 core: about 8 MFLOP/s of FFT, under
-1 M adds/s of correlation for 4 lanes × 2 profiles, and 2–3 ms per LDPC
-decode. Under 5 % of one core. Decode latency about 0.3 s after block end in
-profile F.
-
-Reported SNR for the heard list is `10·log10(γ̂ · R_s / 2500)` dB with `γ̂`
-from the preamble, so that figures are comparable with FT8 reports.
+Estimated load on one Raspberry Pi 4 core: about 20 MFLOP/s of FFT, under
+0.1 M adds/s of correlation, and 5–20 ms per GF(64) block decode.
 
 ## 11. Transmitter reference pipeline
 
-1. Build the tone index sequence: preamble, then blocks with pilots and
-   hop-mapped data.
-2. Synthesise at 48 kHz: convolve the index sequence with the Gaussian pulse
-   of Section 3.2, map to instantaneous frequency `f(L, 0) + 31.25 · idx(t)`,
-   integrate into a phase accumulator, output `A · sin(phase)` with constant
-   `A` = −6 dBFS.
-3. Apply a raised-cosine amplitude ramp of 32 ms at the start (first tone
-   held) and at the end.
-4. Keying sequence via rigctld: `T 1`, wait `tx_delay` (default 150 ms,
-   configurable 50–500 ms), play audio, 50 ms of silence, `T 0`.
-5. Set the rig to data mode with the widest available filter (`M PKTUSB
-   3000`) and set the dial frequency with `F`.
-
-Audio level: adjust so the rig's ALC meter shows at most the first segment.
-Because the envelope is constant, ALC compression affects only the ramps.
-The audio chain MUST NOT clip: the second harmonic of a lane 1 tone lands in
-lane 3.
+As version 0.1: synthesise at the sound-card rate, phase-continuous,
+constant amplitude −6 dBFS, 26.67 ms raised-cosine ramps, PTT via rigctld
+with a configurable delay. The audio chain MUST NOT clip.
 
 ## 12. Channel access
 
-A lane is **busy** if (a) a burst detected on it has not reached its
-predicted end, or (b) the mean of `Ẽ` over the lane's 16 bins for the last
-1 s exceeds 2.0 (3 dB above baseline).
+Listen-before-talk is OPTIONAL and off by default: HF is never quiet, and
+overlapping bursts are decodable. A station that enables it treats the band
+as busy while a detected burst is in progress, while the hottest tone bin is
+10 dB above the passband median, or during a reserved ACK window, and backs
+off a random 0..7 slots of 0.5 s.
 
-Before transmitting a message or beacon a station MUST:
+## 13. Acknowledgement, presence, relay
 
-1. Choose the lane: the user's configured lane, or if set to automatic, the
-   idle lane with the lowest mean `Ẽ` over the last 10 s.
-2. If the lane is busy, wait for it to become idle, then back off a random
-   0..7 slots of 0.5 s and re-check. Repeat until idle.
+Unchanged from version 0.1 in substance: a direct message with `ack_req`
+set is answered by an ACK short frame on the same profile from 1 s after the
+burst; group messages are not acknowledged; every decoded frame updates the
+heard list; beacons are optional; relay is reserved (`hop` = 0).
 
-ACK bursts (Section 13) are sent without listen-before-talk.
+## 14. Regulatory notes
 
-A station SHOULD default to profile F and use S only when the heard-list SNR
-of the destination, or the operator, says so. A 240-character message in S
-holds a lane for 88 s.
-
-## 13. Acknowledgement and retry
-
-A message with `dest_type = 2` (callsign) and `ack_req` set requests an ACK.
-
-- The addressed station, if it decoded block 0 and all blocks, MUST send an
-  ACK short frame on the same lane and profile, starting 1.0 s (F) or 2.0 s
-  (S) after the end of the message burst.
-- Other stations that decoded block 0 of such a message MUST treat the lane
-  as busy for the ACK window plus the ACK airtime plus 1 s.
-- The sender waits for the ACK window. If no ACK arrives, it MAY retransmit
-  the identical burst after a uniform random delay of 15–45 s (F) or 30–90 s
-  (S), with listen-before-talk, up to 2 retransmissions (3 transmissions in
-  total). The user interface SHOULD show sent, delivered and failed states.
-
-Group and broadcast messages are never acknowledged.
-
-## 14. Presence
-
-Every decoded frame updates a heard list entry for its sender: callsign,
-SNR, lane, profile, time, and for beacons the locator, group tags and status.
-
-A station MAY send a beacon when it has neither transmitted nor been
-addressed for at least 10 minutes, at uniform random intervals of 10–30
-minutes thereafter. Beacons use profile F unless the operator chooses S.
-
-## 15. Relay (reserved)
-
-Version 0 stations MUST send `hop = 0` and MUST NOT relay. The following
-rules are reserved for a future version and are given so that the frame
-format need not change:
-
-- A station relays a group or broadcast message once, after a random delay,
-  if it has not heard the same `(sender, msg_id)` relayed, with `hop`
-  incremented. `hop = 3` is never relayed.
-- Receivers de-duplicate on `(sender, msg_id)` regardless of `hop`.
-- ACKs are not relayed in the first relay version.
-
-## 16. Regulatory notes
-
-- The emission is 16-tone MFSK with a necessary bandwidth of 500 Hz, the
-  same as Olivia 16/500. The per-symbol tone permutation changes which tone
-  carries which value; it does not expand the bandwidth, so the emission is
-  not spread spectrum under the usual definitions.
-- IARU Region 1: fits the narrow-band digimode segments (500 Hz) on all HF
-  bands; not the 200 Hz sub-segments of 80 m.
-- FCC Part 97: well within the 2.8 kHz data bandwidth limit; the symbol rate
-  is 31.25 Bd; this document constitutes the public specification required
-  for an unspecified digital code.
-- Confirmation of the spread-spectrum interpretation with PTS and the FCC is
-  an open item (DESIGN.md Section 12).
-
-## 17. Appendices (to be added)
-
-- A. Costas sequences `C`, `S`, `P`, PHASE templates and a worked correlation
-  example.
-- B. Text alphabet table and static prior frequencies.
-- C. Test vectors: packed callsigns, group hashes, CRC, a complete encoded
-  block, a complete tone sequence.
+The emission is 64-tone MFSK with a necessary bandwidth of 2400 Hz: a wide
+digital mode, for the IARU Region 1 wide-digimode segments and, in the US,
+within the 2.8 kHz data bandwidth limit at 37.5 Bd. The per-symbol tone
+permutation does not expand the bandwidth. This document is the public
+specification of the code.

@@ -1,18 +1,25 @@
-//! Burst construction (SPEC §7.2, §11): preamble, then blocks of pilots and
-//! hop-mapped, interleaved LDPC codewords.
+//! Burst construction: preamble, then blocks of 4 pilots and 128 hop-mapped
+//! GF(64) coded symbols.
+
+use std::sync::OnceLock;
+
+use fika_nb::NbCode;
 
 use crate::error::ModemError;
 use crate::frame_kind::FrameKind;
 use crate::gfsk;
 use crate::hop;
-use crate::interleave::interleave;
-use crate::ldpc::Ldpc;
-use crate::params::{PILOT_SYMBOLS, check_lane};
+use crate::params::{PILOT_SYMBOLS, PREAMBLE_SYMBOLS};
 use crate::preamble;
 use crate::profile::Profile;
-use crate::symbols::bits_to_values;
+use crate::symbols::bytes_to_symbols;
 
-/// What goes on air: kind, pattern phase, and the info bytes of each block.
+/// The one GF(64) code used by both frame kinds.
+pub fn code() -> &'static NbCode {
+    static CODE: OnceLock<NbCode> = OnceLock::new();
+    CODE.get_or_init(NbCode::long)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Burst {
     pub kind: FrameKind,
@@ -41,10 +48,13 @@ impl Burst {
         })
     }
 
+    /// Coded symbol sequence of one block (before hopping).
+    pub fn coded_block(block: &[u8]) -> Vec<u8> {
+        code().encode(&bytes_to_symbols(block))
+    }
+
     /// Tone index sequence for the whole burst.
     pub fn tones(&self) -> Vec<u8> {
-        let ldpc = Ldpc::new(self.kind);
-        let (rows, cols) = self.kind.interleaver();
         let mut out: Vec<u8> = preamble::tones(self.kind, self.phase).to_vec();
         let mut m = 0usize;
         for block in &self.blocks {
@@ -52,8 +62,7 @@ impl Burst {
                 out.push(hop::pilot_tone(m, self.phase));
                 m += 1;
             }
-            let bits = interleave(&ldpc.encode_bits(block), rows, cols);
-            for d in bits_to_values(&bits) {
+            for d in Self::coded_block(block) {
                 out.push(hop::map(d, m, self.phase));
                 m += 1;
             }
@@ -62,7 +71,7 @@ impl Burst {
     }
 
     pub fn symbols(&self) -> usize {
-        crate::params::PREAMBLE_SYMBOLS + self.blocks.len() * self.kind.block_symbols()
+        PREAMBLE_SYMBOLS + self.blocks.len() * self.kind.block_symbols()
     }
 
     pub fn airtime_s(&self, profile: Profile) -> f64 {
@@ -83,14 +92,11 @@ impl Transmitter {
     pub fn render(
         &self,
         burst: &Burst,
-        lane: usize,
         profile: Profile,
         freq_offset_hz: f64,
     ) -> Result<Vec<f32>, ModemError> {
-        check_lane(lane)?;
         gfsk::synthesize(
             &burst.tones(),
-            lane,
             profile,
             self.fs,
             self.amplitude,
@@ -105,12 +111,11 @@ mod tests {
 
     #[test]
     fn burst_lengths() {
-        let b = Burst::new(FrameKind::Long, 3, vec![vec![1u8; 32]; 4]).unwrap();
-        assert_eq!(b.tones().len(), 24 + 4 * 132);
-        assert!((b.airtime_s(Profile::Fast) - 17.664).abs() < 1e-9);
-        let s = Burst::new(FrameKind::Short, 0, vec![vec![0u8; 16]]).unwrap();
-        assert_eq!(s.tones().len(), 24 + 68);
-        assert!(Burst::new(FrameKind::Short, 0, vec![vec![0u8; 16]; 2]).is_err());
-        assert!(Burst::new(FrameKind::Long, 0, vec![vec![0u8; 16]]).is_err());
+        let b = Burst::new(FrameKind::Long, 3, vec![vec![1u8; 48]; 2]).unwrap();
+        assert_eq!(b.tones().len(), 24 + 2 * 132);
+        assert!(b.tones().iter().all(|&t| t < 64));
+        assert!((b.airtime_s(Profile::Fast) - 288.0 / 37.5).abs() < 1e-9);
+        assert!(Burst::new(FrameKind::Short, 0, vec![vec![0u8; 48]; 2]).is_err());
+        assert!(Burst::new(FrameKind::Long, 0, vec![vec![0u8; 32]]).is_err());
     }
 }

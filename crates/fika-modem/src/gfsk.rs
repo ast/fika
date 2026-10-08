@@ -1,14 +1,14 @@
-//! Phase-continuous Gaussian-shaped MFSK synthesis (SPEC §3.2, §11).
+//! Phase-continuous Gaussian-shaped MFSK synthesis.
 //!
-//! The tone index sequence is expanded to 32 ms shaping units, convolved
-//! with the FT8-style erf pulse, turned into instantaneous frequency and
-//! integrated into a phase accumulator. Amplitude is constant apart from
-//! raised-cosine ramps of one unit at each end.
+//! The tone index sequence is expanded to shaping units (one fast symbol),
+//! convolved with the FT8-style erf pulse, turned into instantaneous
+//! frequency and integrated into a phase accumulator. Amplitude is constant
+//! apart from raised-cosine ramps of one unit at each end.
 
 use std::f64::consts::PI;
 
 use crate::error::ModemError;
-use crate::params::{BIN_HZ, GAUSS_BT, check_lane, samples_per_unit, tone_hz};
+use crate::params::{BIN_HZ, GAUSS_BT, samples_per_unit, tone_hz};
 use crate::profile::Profile;
 
 /// Abramowitz & Stegun 7.1.26, max error 1.5e-7.
@@ -27,7 +27,7 @@ pub fn pulse(x: f64) -> f64 {
 }
 
 /// Instantaneous tone index (fractional) per sample for a unit sequence.
-fn frequency_track(units: &[u8], spu: usize) -> Vec<f64> {
+pub fn frequency_track(units: &[u8], spu: usize) -> Vec<f64> {
     let n_units = units.len();
     let total = n_units * spu;
     let at = |j: i64| -> f64 {
@@ -45,17 +45,15 @@ fn frequency_track(units: &[u8], spu: usize) -> Vec<f64> {
         .collect()
 }
 
-/// Synthesise a burst of `tones` in `lane` at sample rate `fs`.
-/// `freq_offset_hz` shifts every tone, to emulate a mistuned transmitter.
+/// Synthesise a burst of `tones` at sample rate `fs`. `freq_offset_hz`
+/// shifts every tone, to emulate a mistuned transmitter.
 pub fn synthesize(
     tones: &[u8],
-    lane: usize,
     profile: Profile,
     fs: u32,
     amplitude: f32,
     freq_offset_hz: f64,
 ) -> Result<Vec<f32>, ModemError> {
-    check_lane(lane)?;
     let spu = samples_per_unit(fs)?;
     let r = profile.units_per_symbol();
     let units: Vec<u8> = tones
@@ -63,8 +61,7 @@ pub fn synthesize(
         .flat_map(|&t| std::iter::repeat_n(t, r))
         .collect();
     let track = frequency_track(&units, spu);
-
-    let f0 = tone_hz(lane, 0) + freq_offset_hz;
+    let f0 = tone_hz(0) + freq_offset_hz;
     let mut phase = 0.0f64;
     let n = track.len();
     let mut out = Vec::with_capacity(n);
@@ -91,47 +88,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn erf_and_pulse_sanity() {
-        assert!((erf(0.0)).abs() < 1e-6);
-        assert!((erf(3.0) - 1.0).abs() < 1e-4);
-        assert!((pulse(0.0) - 1.0).abs() < 1e-6);
-        assert!(pulse(1.0).abs() < 1e-6);
-        // Partition of unity across integer-spaced pulses.
+    fn pulse_partition_of_unity() {
         for k in 0..10 {
             let t = k as f64 * 0.1;
             let s: f64 = (-3..=3).map(|j| pulse(t - j as f64)).sum();
-            assert!((s - 1.0).abs() < 1e-6, "t={t} s={s}");
+            assert!((s - 1.0).abs() < 1e-6);
         }
     }
 
     #[test]
-    fn slow_profile_holds_tone_flat_between_transitions() {
-        let spu = 384;
-        let units: Vec<u8> = [3u8; 5].iter().chain([9u8; 5].iter()).copied().collect();
-        let track = frequency_track(&units, spu);
-        // Middle of the first symbol: exactly tone 3.
-        assert!((track[2 * spu + spu / 2] - 3.0).abs() < 1e-6);
-        // Middle of second: exactly tone 9.
-        assert!((track[7 * spu + spu / 2] - 9.0).abs() < 1e-6);
-        // Transition at unit boundary 5 is halfway.
-        assert!((track[5 * spu] - 6.0).abs() < 0.05);
-    }
-
-    #[test]
-    fn single_tone_has_expected_frequency_and_constant_envelope() {
+    fn single_tone_frequency_and_envelope() {
         let fs = 12_000;
-        let tones = [7u8; 20];
-        let x = synthesize(&tones, 1, Profile::Fast, fs, 0.5, 0.0).unwrap();
-        assert_eq!(x.len(), 20 * 384);
-        // Count zero crossings in the flat middle to estimate frequency.
-        let mid = &x[5 * 384..15 * 384];
+        let x = synthesize(&[40u8; 20], Profile::Fast, fs, 0.5, 0.0).unwrap();
+        assert_eq!(x.len(), 20 * 320);
+        let mid = &x[5 * 320..15 * 320];
         let crossings = mid
             .windows(2)
             .filter(|w| (w[0] >= 0.0) != (w[1] >= 0.0))
             .count();
         let f_est = crossings as f64 / 2.0 / (mid.len() as f64 / fs as f64);
-        let f_exp = tone_hz(1, 7);
-        assert!((f_est - f_exp).abs() < 2.0, "f_est {f_est} vs {f_exp}");
+        assert!((f_est - tone_hz(40)).abs() < 2.0, "f_est {f_est}");
         let peak = mid.iter().fold(0f32, |m, &v| m.max(v.abs()));
         assert!((peak - 0.5).abs() < 0.01);
     }

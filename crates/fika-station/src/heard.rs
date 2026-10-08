@@ -6,7 +6,6 @@ use fika_modem::Profile;
 pub struct HeardEntry {
     pub call: String,
     pub snr_db: f32,
-    pub lane: usize,
     pub profile: Profile,
     pub last_epoch: f64,
     pub count: usize,
@@ -19,19 +18,10 @@ pub struct HeardList {
 }
 
 impl HeardList {
-    pub fn update(
-        &mut self,
-        packed: u32,
-        call: String,
-        snr_db: f32,
-        lane: usize,
-        profile: Profile,
-        epoch: f64,
-    ) {
+    pub fn update(&mut self, packed: u32, call: String, snr_db: f32, profile: Profile, epoch: f64) {
         let e = self.entries.entry(packed).or_insert(HeardEntry {
             call: call.clone(),
             snr_db,
-            lane,
             profile,
             last_epoch: epoch,
             count: 0,
@@ -39,7 +29,6 @@ impl HeardList {
         });
         e.call = call;
         e.snr_db = snr_db;
-        e.lane = lane;
         e.profile = profile;
         e.last_epoch = epoch;
         e.count += 1;

@@ -4,6 +4,83 @@ This document explains why the protocol in [SPEC.md](SPEC.md) looks the way it
 does. The spec says what; this says why, what was considered instead, and what
 is still open. Nothing here is normative.
 
+## 0. The v2 waveform: simultaneous senders in one band
+
+Version 0.1 put 16-tone signals in 500 Hz lanes. It decoded four stations at
+once only if they sat on different lanes; two equal-power senders on one lane
+both failed. The user dropped the 500 Hz band-plan constraint to find out
+what it takes to decode several senders transmitting **at the same time in
+the same band**. The answer was in the decoder, not the bandwidth.
+
+**Why bit-level decoding fails.** With two overlapping bursts every symbol
+shows two energy peaks. The true information lost is one bit per symbol,
+"which of the two", but a receiver that converts the tone energies into
+separate bit log-likelihoods throws away about half of them, because two
+random tone values disagree in half their bits. Half the bit likelihoods is
+exactly a rate-1/2 code's information rate, so both bursts die. Making the
+alphabet larger does not help: two random 6-bit values also disagree in half
+their bits.
+
+**Symbol-level decoding.** A non-binary LDPC code over GF(64) takes the 64
+tone energies of a symbol as one probability vector. An equal-power
+interferer then costs about one bit of six per symbol, three interferers
+about two bits. Monte-Carlo capacity of 64-ary non-coherent MFSK with U
+equal-power asynchronous users (bits per symbol, mixture likelihood):
+
+| Es/N0 | U = 1 | 2 | 3 | 4 | 6 | 8 |
+|---|---|---|---|---|---|---|
+| 10 dB | 5.6 | 4.8 | 4.1 | 3.8 | 3.1 | 2.6 |
+| 15 dB | — | 5.1 | 4.5 | 4.0 | 3.2 | 3.0 |
+
+Rate 1/2 needs 3 bits per symbol plus a margin, so it carries about four
+equal-power senders; a rate-1/3 "crowd" code carries six to eight.
+
+**The likelihood matters as much as the code.** The exact single-user
+non-coherent likelihood becomes catastrophic with an interferer, because a
+peak 10 dB above the wanted tone gets 10 dB more credit. The receiver
+therefore models every other tone as carrying an interferer peak with
+probability q, which saturates a peak's evidence at ln(1/q): two equal
+peaks split the posterior, a stronger peak gets no more credit than our own.
+Per-bin noise normalisation (75th percentile over the block) and a cap on
+the SNR used in the metric complete it.
+
+**Gate results (crates/fika-nb/tests/gates.rs, abstract 64-bin model).**
+Rate 1/2 reaches 50 % at Es/N0 ≈ 6.7 dB single-user; with asynchronous
+equal-power interferers it decodes 100 % of blocks for 2, 3, 4 and 5 users
+at 10, 12, 14 and 16 dB; rate 1/3 decodes 8 users at 16 dB. Near-far at
++10 dB decodes 35 % in the abstract model but 95 % in the real modem (the
+per-bin normalisation and the hop help more than the abstract model credits).
+
+**Measured end to end (fika sim / fika multi, AWGN).** Fast profile 50 %
+decode at −10.2 dB (theory −10.9), slow at −19.3 dB (theory −18.7). Two,
+three and four stations transmitting at once in the same band at −6 dB each:
+100 % of bursts decoded. Three at −8 dB: 100 %. Two stations 10 dB apart
+with the weak one at −8 dB: the weak one decodes 95 %. False detections with
+a +20 dB single signal: 0.1 per burst (was about 1).
+
+**What changed.** 64 tones at 37.5 Hz across 300–2700 Hz (frequency diversity
+against selective fading); 26.67 ms symbols at 6 bits; GF(64) LDPC n = 128,
+k = 64 (384 bits per block, so a 240-character message is two blocks and
+7.7 s instead of four blocks and 17.7 s); the three order-16 Welch arrays
+scaled onto the band with disjoint residues for long sync, short sync and
+pilots, and an order-64 Welch array for the data hop; a detector with median
+and support tests, local non-maximum suppression and a PHASE readout that
+can report two phases; lanes removed everywhere.
+
+**Costs.** 2400 Hz is a wide digital mode, for the wide-digimode segments.
+The fast profile gives up 1.3 dB against v1 at the same reference bandwidth
+in exchange for 1.8× the bit rate; the slow profile gains 0.6 dB. The code
+runs 5–20 ms per block on a Raspberry Pi 4, well within the 3.5 s block.
+
+**Open after v2.** Energy-domain cancellation (blank a decoded burst's cells
+for the others) and time-domain subtraction for 15–20 dB power imbalance;
+the rate-1/3 profile behind a flag; freezing the code table; a Tukey window
+on the symbol correlator to cut rectangular-window leakage from strong
+asynchronous interferers; per-block tracking on long bursts.
+
+The sections below describe version 0.1 and its reasoning; where they
+mention lanes, 16 tones or binary LDPC they are historical.
+
 ## 1. What fika is for
 
 Existing HF text modes fall into two camps. FT8 and its relatives are

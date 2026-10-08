@@ -56,7 +56,6 @@ pub enum StationEvent {
     /// Listen-before-talk is holding a transmission.
     TxWaiting {
         label: String,
-        lane: usize,
     },
     TxStarted {
         label: String,

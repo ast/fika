@@ -174,7 +174,7 @@ mod tests {
         let t = "Hej allihopa! Antennen är uppe igen efter stormen, 40 m dipol på 12 meters höjd. \
                  Hör er fint här i Göteborg trots QRN. Någon som kör 60 m i kväll? 73 de SM6WJM";
         let n = roundtrip(t);
-        assert!((2..=4).contains(&n), "{n} blocks");
+        assert!((2..=3).contains(&n), "{n} blocks");
     }
 
     #[test]

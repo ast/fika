@@ -5,6 +5,7 @@ use num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
 use std::sync::Arc;
 
+use crate::params::TONES;
 use crate::params::{BIN_HZ, RX_SAMPLE_RATE, tone_hz};
 use crate::profile::Profile;
 
@@ -67,9 +68,10 @@ impl EnergyMatrix {
         self.fs as f64 / self.nfft as f64
     }
 
-    /// Column index of `tone` in `lane` at zero offset.
-    pub fn tone_bin(&self, lane: usize, tone: usize) -> usize {
-        let hz = tone_hz(lane, tone);
+    /// Column index of `tone` at zero offset.
+    pub fn tone_bin(&self, tone: usize) -> usize {
+        debug_assert!(tone < TONES);
+        let hz = tone_hz(tone);
         let b = hz / self.bin_hz();
         debug_assert!((b - b.round()).abs() < 1e-6);
         b.round() as usize
@@ -124,14 +126,8 @@ impl EnergyMatrix {
                 col.clear();
                 col.extend((start..end).map(|f| self.raw[f * self.nbins + bin]));
                 let k = ((col.len() as f64 - 1.0) * P).round() as usize;
-                let col_max = col.iter().copied().fold(0f32, f32::max);
                 let (_, p30, _) = col.select_nth_unstable_by(k, |a, b| a.total_cmp(b));
-                // Per-bin floor 30 dB under the bin's own peak: invisible
-                // under noise, but for a clean strong signal it keeps
-                // spectral leakage below the clip so sync keeps its shape.
-                let base = (*p30 as f64 * p_to_mean)
-                    .max(floor as f64)
-                    .max(col_max as f64 * 1e-3) as f32;
+                let base = (*p30 as f64 * p_to_mean).max(floor as f64) as f32;
                 for f in start..end {
                     let i = f * self.nbins + bin;
                     self.norm[i] = self.raw[i] / base;
@@ -185,21 +181,21 @@ mod tests {
     #[test]
     fn geometry_matches_spec() {
         let m = EnergyMatrix::new(Profile::Fast);
-        assert_eq!((m.window, m.nfft, m.hop), (384, 1536, 96));
-        assert!((m.bin_hz() - 7.8125).abs() < 1e-9);
-        assert_eq!(m.tone_bin(0, 0), 56);
-        assert_eq!(m.tone_bin(1, 3), 56 + 72 + 12);
+        assert_eq!((m.window, m.nfft, m.hop, m.sub), (320, 1280, 80, 4));
+        assert!((m.bin_hz() - 9.375).abs() < 1e-9);
+        assert_eq!(m.tone_bin(0), 34);
+        assert_eq!(m.tone_bin(63), 34 + 63 * 4);
         let s = EnergyMatrix::new(Profile::Slow);
-        assert_eq!((s.window, s.nfft, s.hop), (1920, 3840, 480));
-        assert_eq!(s.tone_bin(0, 0), 140);
+        assert_eq!((s.window, s.nfft, s.hop, s.sub), (1920, 3840, 480, 12));
+        assert_eq!(s.tone_bin(0), 102);
     }
 
     #[test]
     fn tone_shows_up_in_its_bin() {
-        let x = crate::gfsk::synthesize(&[5u8; 40], 2, Profile::Fast, 12_000, 0.3, 0.0).unwrap();
+        let x = crate::gfsk::synthesize(&[5u8; 40], Profile::Fast, 12_000, 0.3, 0.0).unwrap();
         let mut m = EnergyMatrix::new(Profile::Fast);
         m.compute(&x);
-        let bin = m.tone_bin(2, 5);
+        let bin = m.tone_bin(5);
         let mid = m.frames / 2;
         assert!(m.raw_at(mid, bin) > 100.0 * m.raw_at(mid, bin + 8));
     }

@@ -19,8 +19,6 @@ input = "{sink}"
 output = "{sink}"
 sample_rate = 12000
 loopback = false
-[modem]
-lane = 2
 [live]
 enabled = true
 snr_db = 0.0

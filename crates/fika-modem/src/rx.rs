@@ -49,7 +49,6 @@ impl Receiver {
         self.demod.decode_block(samples, det, index)
     }
 
-    /// Decode blocks 0..n of a burst.
     pub fn decode_blocks(
         &mut self,
         samples: &[f32],

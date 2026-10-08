@@ -4,7 +4,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, Wrap};
 
-use fika_modem::params::{LANES, lane_center_hz};
 use fika_station::time::{age, hms};
 
 use crate::app::App;
@@ -68,8 +67,8 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         Span::raw("  "),
         ptt,
         Span::raw(format!(
-            "  {freq}  {rig}  lane {} {}  to {}",
-            st.lane, st.profile, st.dest_label
+            "  {freq}  {rig}  {}  to {}",
+            st.profile, st.dest_label
         )),
         Span::raw(if st.cfg.audio.loopback {
             "  [loopback]"
@@ -140,10 +139,9 @@ fn draw_heard(f: &mut Frame, app: &App, area: Rect) {
         .map(|e| {
             Row::new(vec![
                 e.call.clone(),
-                format!("{:+.0}", e.snr_db),
                 format!(
-                    "{}{}",
-                    e.lane,
+                    "{:+.0}{}",
+                    e.snr_db,
                     if e.profile == fika_modem::Profile::Slow {
                         "s"
                     } else {
@@ -159,14 +157,13 @@ fn draw_heard(f: &mut Frame, app: &App, area: Rect) {
         rows,
         [
             Constraint::Length(8),
-            Constraint::Length(4),
-            Constraint::Length(3),
+            Constraint::Length(5),
             Constraint::Length(5),
             Constraint::Length(4),
         ],
     )
     .header(
-        Row::new(vec!["call", "dB", "ln", "grid", "age"])
+        Row::new(vec!["call", "dB", "grid", "age"])
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
     .block(Block::default().borders(Borders::ALL).title(" heard "));
@@ -187,12 +184,14 @@ fn draw_waterfall(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
     let width = inner.width as usize;
-    // Lane ruler.
+    // Frequency ruler: a tick every 500 Hz, labelled in hundreds of hertz.
     let mut ruler = vec![' '; width];
-    for lane in 0..LANES {
-        let x = ((lane_center_hz(lane) - 300.0) / 2400.0 * width as f64) as usize;
-        if x < width {
-            ruler[x] = char::from(b'0' + lane as u8);
+    for hz in (500..=2500).step_by(500) {
+        let x = ((hz as f64 - 300.0) / 2400.0 * width as f64) as usize;
+        for (i, ch) in format!("{}", hz / 100).chars().enumerate() {
+            if x + i < width {
+                ruler[x + i] = ch;
+            }
         }
     }
     let ruler: String = ruler.into_iter().collect();
@@ -306,7 +305,6 @@ fn draw_help(f: &mut Frame, area: Rect) {
         Line::from("Type a message and press Enter to send it."),
         Line::from(""),
         Line::from("/to @group | CALL | all   change destination"),
-        Line::from("/lane 0..3                transmit lane"),
         Line::from("/profile fast|slow        speed profile"),
         Line::from("/beacon                   send a beacon"),
         Line::from("/clear                    clear the chat"),

@@ -35,8 +35,6 @@ pub struct SimArgs {
     pub from: String,
     #[arg(long, default_value = "@fika")]
     pub to: String,
-    #[arg(long, default_value_t = 1)]
-    pub lane: usize,
     /// Transmitter frequency error, Hz.
     #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
     pub offset_hz: f64,
@@ -77,11 +75,11 @@ pub struct DetectorArgs {
     #[arg(long, default_value_t = 2.0)]
     pub peak_ratio: f32,
     /// Minimum SYNC bins (of 16) at or above a quarter of their mean.
-    #[arg(long, default_value_t = 9)]
+    #[arg(long, default_value_t = 11)]
     pub min_support: usize,
-    /// Required ratio between best and second-best PHASE candidate.
-    #[arg(long, default_value_t = 1.5)]
-    pub phase_ratio: f32,
+    /// A PHASE candidate must reach this fraction of the best one.
+    #[arg(long, default_value_t = 0.6)]
+    pub phase_fraction: f32,
 }
 
 impl DetectorArgs {
@@ -89,7 +87,7 @@ impl DetectorArgs {
         rx.cfg.threshold = threshold;
         rx.cfg.peak_ratio = self.peak_ratio;
         rx.cfg.min_support = self.min_support;
-        rx.cfg.phase_ratio = self.phase_ratio;
+        rx.cfg.phase_fraction = self.phase_fraction;
     }
 }
 
@@ -189,7 +187,6 @@ pub fn run(args: SimArgs) -> Result<()> {
         from: args.from.clone(),
         to: args.to.clone(),
         text: args.text.clone(),
-        lane: args.lane,
         profile: args.profile,
         phase: None,
         ack: false,
@@ -235,7 +232,7 @@ pub fn run(args: SimArgs) -> Result<()> {
             let phase = rng.random_range(0..16u8);
             let msg_id: u16 = rng.random();
             let (expected, burst) = build(&tx_args, msg_id, phase)?;
-            let audio = tx.render(&burst, args.lane, args.profile, args.offset_hz)?;
+            let audio = tx.render(&burst, args.profile, args.offset_hz)?;
             let lead = rng.random_range(fs as usize / 2..fs as usize * 2);
             let mut buf = vec![0f32; lead];
             buf.extend_from_slice(&audio);
@@ -252,8 +249,7 @@ pub fn run(args: SimArgs) -> Result<()> {
             args.detector.apply(&mut rx, args.threshold);
             let dets = rx.detect(&buf);
             let is_hit = |d: &&fika_modem::Detection| {
-                d.lane == args.lane
-                    && d.profile == args.profile
+                d.profile == args.profile
                     && d.kind == burst.kind
                     && (d.start_sample - lead as f64).abs() < 2.0 * fs as f64 * 0.032
             };
@@ -266,7 +262,7 @@ pub fn run(args: SimArgs) -> Result<()> {
                 tally.false_dets += 1;
                 *tally
                     .false_by
-                    .entry(format!("{} {} lane{}", d.profile, d.kind.name(), d.lane))
+                    .entry(format!("{} {}", d.profile, d.kind.name()))
                     .or_default() += 1;
             }
             tally.blocks_total += burst.blocks.len();

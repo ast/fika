@@ -1,11 +1,11 @@
 use crate::error::ModemError;
 use crate::params::samples_per_unit;
 
-/// Symbol length profile (SPEC §4). Tones and coding are identical; only
-/// the symbol period differs.
+/// Symbol length profile. Tones and coding are identical; only the symbol
+/// period differs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Profile {
-    /// 32 ms symbols, 31.25 Bd.
+    /// 26.67 ms symbols, 37.5 Bd.
     Fast,
     /// 160 ms symbols, 6.25 Bd.
     Slow,
@@ -14,16 +14,16 @@ pub enum Profile {
 impl Profile {
     pub const ALL: [Profile; 2] = [Profile::Fast, Profile::Slow];
 
-    /// Symbol period in 32 ms shaping units.
+    /// Symbol period in shaping units.
     pub const fn units_per_symbol(self) -> usize {
         match self {
             Profile::Fast => 1,
-            Profile::Slow => 5,
+            Profile::Slow => 6,
         }
     }
 
     pub fn symbol_s(self) -> f64 {
-        0.032 * self.units_per_symbol() as f64
+        crate::params::SHAPING_UNIT_S * self.units_per_symbol() as f64
     }
 
     pub fn baud(self) -> f64 {

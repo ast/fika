@@ -27,7 +27,6 @@ struct Scenario {
 fn run(sc: &Scenario) -> f64 {
     let fs = fika_modem::params::RX_SAMPLE_RATE;
     let tx = Transmitter::new(fs);
-    let lane = 1;
     let mut ok = 0;
     for trial in 0..sc.trials {
         let mut rng = StdRng::seed_from_u64(1000 + trial as u64);
@@ -44,7 +43,7 @@ fn run(sc: &Scenario) -> f64 {
             msg.to_blocks().unwrap(),
         )
         .unwrap();
-        let audio = tx.render(&burst, lane, sc.profile, 0.0).unwrap();
+        let audio = tx.render(&burst, sc.profile, 0.0).unwrap();
         let lead = rng.random_range(fs as usize / 2..fs as usize * 2);
         let mut buf = vec![0f32; lead];
         buf.extend_from_slice(&audio);
@@ -63,7 +62,7 @@ fn run(sc: &Scenario) -> f64 {
         let dets = rx.detect(&buf);
         let Some(det) = dets
             .iter()
-            .filter(|d| d.lane == lane && d.profile == sc.profile && d.kind == FrameKind::Long)
+            .filter(|d| d.profile == sc.profile && d.kind == FrameKind::Long)
             .min_by(|a, b| {
                 (a.start_sample - lead as f64)
                     .abs()
@@ -100,18 +99,18 @@ fn scenarios() -> Vec<Scenario> {
     vec![
         // Reference points on AWGN, about 1 dB above the measured 50 % threshold.
         s(
-            "fast awgn -10 dB",
+            "fast awgn -9 dB",
             Fast,
-            -10.0,
+            -9.0,
             ChannelSpec::awgn(),
             0.0,
             12,
             0.85,
         ),
         s(
-            "slow awgn -17 dB",
+            "slow awgn -18 dB",
             Slow,
-            -17.0,
+            -18.0,
             ChannelSpec::awgn(),
             0.0,
             6,
@@ -146,7 +145,7 @@ fn scenarios() -> Vec<Scenario> {
             0.8,
         ),
         // Fading, ITU-R F.1487 mid-latitude.
-        // Slow selective fading: the lane can sit in a notch for a whole
+        // Slow selective fading: the band can sit in a notch for a whole
         // burst, so even at 0 dB some messages are simply gone.
         s(
             "fast mid-quiet 0 dB",
@@ -184,9 +183,9 @@ fn scenarios() -> Vec<Scenario> {
             6,
             0.5,
         ),
-        // Interference inside the lane: the hopping must ride over it.
+        // Interference inside the band: the hopping must ride over it.
         s(
-            "fast carrier in lane, 0 dB",
+            "fast carrier in band, 0 dB",
             Fast,
             -6.0,
             ChannelSpec::awgn().with_interferer(Interferer::Carrier {
@@ -213,7 +212,7 @@ fn scenarios() -> Vec<Scenario> {
             0.7,
         ),
         s(
-            "fast CW in lane, +6 dB",
+            "fast CW in band, +6 dB",
             Fast,
             -6.0,
             ChannelSpec::awgn().with_interferer(Interferer::Cw {
@@ -226,7 +225,7 @@ fn scenarios() -> Vec<Scenario> {
             0.7,
         ),
         s(
-            "fast RTTY in lane, -3 dB",
+            "fast RTTY in band, -3 dB",
             Fast,
             -6.0,
             ChannelSpec::awgn().with_interferer(Interferer::Rtty {
@@ -238,7 +237,7 @@ fn scenarios() -> Vec<Scenario> {
             0.6,
         ),
         s(
-            "fast PSK31 next lane, +10 dB",
+            "fast PSK31 in band, +10 dB",
             Fast,
             -8.0,
             ChannelSpec::awgn().with_interferer(Interferer::Psk31 {

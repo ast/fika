@@ -500,12 +500,20 @@ dependencies = [
 name = "fika-modem"
 version = "0.1.0"
 dependencies = [
- "labrador-ldpc",
+ "fika-nb",
  "num-complex",
  "rand",
  "rand_distr",
  "rustfft",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "fika-nb"
+version = "0.1.0"
+dependencies = [
+ "rand",
+ "rand_distr",
 ]
 
 [[package]]
@@ -837,12 +845,6 @@ dependencies = [
  "futures-util",
  "wasm-bindgen",
 ]
-
-[[package]]
-name = "labrador-ldpc"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52bbada3351e4ae9078bcd095b83eac3a0bc29ed7d63031f062830f8f22485a4"
 
 [[package]]
 name = "lazy_static"

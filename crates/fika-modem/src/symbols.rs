@@ -1,6 +1,4 @@
-//! Bit and symbol packing helpers. Bits are `u8` values 0/1, MSB first.
-
-use crate::params::BITS_PER_SYMBOL;
+//! Bit, byte and GF(64) symbol packing. Bits are `u8` 0/1, MSB first.
 
 pub fn bytes_to_bits(bytes: &[u8]) -> Vec<u8> {
     bytes
@@ -15,18 +13,22 @@ pub fn bits_to_bytes(bits: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-/// Group coded bits into 4-bit data values, MSB first.
-pub fn bits_to_values(bits: &[u8]) -> Vec<u8> {
-    debug_assert_eq!(bits.len() % BITS_PER_SYMBOL, 0);
-    bits.chunks(BITS_PER_SYMBOL)
-        .map(|c| c.iter().fold(0u8, |acc, &b| (acc << 1) | (b & 1)))
+/// 48 bytes → 64 six-bit symbols (MSB first).
+pub fn bytes_to_symbols(bytes: &[u8]) -> Vec<u8> {
+    let bits = bytes_to_bits(bytes);
+    assert_eq!(bits.len() % 6, 0, "byte count must be a multiple of 3");
+    bits.chunks(6)
+        .map(|c| c.iter().fold(0u8, |acc, &b| (acc << 1) | b))
         .collect()
 }
 
-/// Bit `b` (0 = MSB) of data value `d`.
-#[inline]
-pub fn value_bit(d: u8, b: usize) -> u8 {
-    (d >> (BITS_PER_SYMBOL - 1 - b)) & 1
+/// 64 six-bit symbols → 48 bytes.
+pub fn symbols_to_bytes(symbols: &[u8]) -> Vec<u8> {
+    let bits: Vec<u8> = symbols
+        .iter()
+        .flat_map(|&s| (0..6).rev().map(move |i| (s >> i) & 1))
+        .collect();
+    bits_to_bytes(&bits)
 }
 
 #[cfg(test)]
@@ -35,13 +37,11 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let bytes = [0xA5u8, 0x3C, 0xFF, 0x00];
-        let bits = bytes_to_bits(&bytes);
-        assert_eq!(bits.len(), 32);
-        assert_eq!(bits_to_bytes(&bits), bytes);
-        let vals = bits_to_values(&bits);
-        assert_eq!(vals, vec![0xA, 0x5, 0x3, 0xC, 0xF, 0xF, 0x0, 0x0]);
-        assert_eq!(value_bit(0b1000, 0), 1);
-        assert_eq!(value_bit(0b0001, 3), 1);
+        let bytes: Vec<u8> = (0..48u8).map(|i| i.wrapping_mul(53) ^ 0x3C).collect();
+        let syms = bytes_to_symbols(&bytes);
+        assert_eq!(syms.len(), 64);
+        assert!(syms.iter().all(|&s| s < 64));
+        assert_eq!(symbols_to_bytes(&syms), bytes);
+        assert_eq!(bits_to_bytes(&bytes_to_bits(&bytes)), bytes);
     }
 }

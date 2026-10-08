@@ -62,11 +62,10 @@ fn selftest(mut station: Station, text: &str) -> Result<()> {
     use std::time::{Duration, Instant};
 
     println!(
-        "selftest: in {} / out {} @ {} Hz, lane {} {}",
+        "selftest: in {} / out {} @ {} Hz, {}",
         station.audio_names.0,
         station.audio_names.1,
         station.cfg.audio.sample_rate,
-        station.lane,
         station.profile
     );
     // Let the receiver settle its noise baseline before transmitting.
@@ -91,8 +90,7 @@ fn selftest(mut station: Station, text: &str) -> Result<()> {
                 }
                 StationEvent::TxFinished => println!("selftest: transmission done, listening"),
                 StationEvent::Detected { det, .. } => println!(
-                    "selftest: burst detected lane {} {} {:+.1} dB offset {:+.1} Hz",
-                    det.lane,
+                    "selftest: burst detected {} {:+.1} dB offset {:+.1} Hz",
                     det.profile,
                     det.snr_db(),
                     det.freq_offset_hz
@@ -116,7 +114,7 @@ fn selftest(mut station: Station, text: &str) -> Result<()> {
                     }
                 }
                 StationEvent::BurstFailed { det } => {
-                    println!("selftest: burst on lane {} failed to decode", det.lane)
+                    println!("selftest: burst {} failed to decode", det.profile)
                 }
                 StationEvent::Log(s) => println!("selftest: {s}"),
                 _ => {}

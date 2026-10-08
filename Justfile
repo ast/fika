@@ -27,10 +27,11 @@ fading: build
     target/release/fika sim --profile fast --channel moderate --sweep=-12:-2:2 --trials 30
     target/release/fika sim --profile fast --channel poor --sweep=-12:-2:2 --trials 30
 
-# Several stations at once: different lanes, then one lane with level spread.
+# Several stations transmitting at the same time in the same band: equal
+# power, then with a 10 dB level spread.
 multi: build
-    target/release/fika multi --stations 4 --snr=-6 --trials 10
-    target/release/fika multi --stations 2 --lane 1 --snr=-4 --spread-db 10 --trials 10 -v
+    target/release/fika multi --stations 3 --snr=-6 --trials 10
+    target/release/fika multi --stations 2 --snr=-8 --spread-db 10 --trials 10 -v
 
 # Encode a message to a WAV and decode it again.
 loop text="Hej från fika, 73 de SM6WJM":
@@ -55,11 +56,11 @@ channels:
 # PipeWire virtual sink ("fika-ether"), adds its own band noise at snr dB and
 # passes its bursts through the channel model. Open one per terminal:
 #   just tui-live SM6WJM
-#   just tui-live AD8KM 2 -12 poor
-tui-live call="SM6WJM" lane="1" snr="-8" channel="awgn":
+#   just tui-live AD8KM -12 poor
+tui-live call="SM6WJM" snr="-8" channel="awgn":
     pw-cli ls Node | grep -q 'node.name = "fika-ether"' || \
       pw-cli create-node adapter '{ factory.name=support.null-audio-sink node.name=fika-ether node.description="fika ether" media.class=Audio/Sink object.linger=true audio.position=[MONO] }' >/dev/null
-    printf '[station]\ncall = "{{call}}"\ngrid = "JO57"\n[audio]\nbackend = "pipewire"\ninput = "fika-ether"\noutput = "fika-ether"\nsample_rate = 12000\nloopback = false\n[modem]\nlane = {{lane}}\n[live]\nenabled = true\nsnr_db = {{snr}}\nchannel = "{{channel}}"\n' > /tmp/fika-live-{{call}}.toml
+    printf '[station]\ncall = "{{call}}"\ngrid = "JO57"\n[audio]\nbackend = "pipewire"\ninput = "fika-ether"\noutput = "fika-ether"\nsample_rate = 12000\nloopback = false\n[live]\nenabled = true\nsnr_db = {{snr}}\nchannel = "{{channel}}"\n' > /tmp/fika-live-{{call}}.toml
     cargo run --release -p fika-tui -- -c /tmp/fika-live-{{call}}.toml
 
 # Remove the virtual sink again.

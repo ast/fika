@@ -1,12 +1,12 @@
 //! Streaming receiver: a rolling 12 kHz buffer with periodic preamble
 //! detection and block decoding as audio arrives. Also produces the input
-//! level, a passband spectrum for the UI, and per-lane busy state for
+//! level, a passband spectrum for the UI, and band busy state for
 //! listen-before-talk.
 
 use std::collections::VecDeque;
 
 use fika_modem::energy::EnergyMatrix;
-use fika_modem::params::{LANES, PREAMBLE_SYMBOLS, RX_SAMPLE_RATE, TONES};
+use fika_modem::params::{PREAMBLE_SYMBOLS, RX_SAMPLE_RATE, TONES};
 use fika_modem::{Detection, FrameKind, Profile, Receiver, SyncConfig};
 use fika_proto::{Destination, Frame, Message, MessageAssembler};
 
@@ -36,13 +36,6 @@ pub enum RxEvent {
     Spectrum(Vec<f32>),
 }
 
-/// Per-lane channel state for listen-before-talk, in absolute samples.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct LaneStatus {
-    /// The lane is busy until this absolute sample index.
-    pub busy_until: f64,
-}
-
 struct Tracked {
     /// Detection with `start_sample` as an absolute sample index.
     det: Detection,
@@ -67,7 +60,6 @@ impl Tracked {
 }
 
 struct Recent {
-    lane: usize,
     profile: Profile,
     start: f64,
 }
@@ -90,9 +82,9 @@ pub struct StreamReceiver {
     /// Our own transmit intervals (absolute samples); bursts overlapping
     /// them are reported lost rather than failed.
     tx_intervals: Vec<(f64, f64)>,
-    /// Per lane: busy-until from energy, tracked bursts and reservations.
-    lane_hot_until: [f64; LANES],
-    lane_reserved_until: [f64; LANES],
+    /// Band busy-until from energy and ACK reservations (absolute samples).
+    hot_until: f64,
+    reserved_until: f64,
     pub keep_s: f64,
     /// Our own packed callsign, so ACK reservations skip messages to us.
     pub my_call: u32,
@@ -102,11 +94,9 @@ const DETECT_EVERY_S: f64 = 1.0;
 const SPECTRUM_EVERY_S: f64 = 0.25;
 const WINDOW_FAST_S: f64 = 20.0;
 const WINDOW_SLOW_S: f64 = 60.0;
-/// A lane counts as busy when its hottest tone bin is this far above the
-/// passband median ...
-const LANE_HOT_DB: f32 = 10.0;
-/// ... and within this much of the hottest lane in the passband.
-const LANE_RELATIVE_DB: f32 = 12.0;
+/// The band counts as busy when its hottest tone bin is this far above the
+/// passband median.
+const BAND_HOT_DB: f32 = 10.0;
 
 impl StreamReceiver {
     pub fn new(cfg: SyncConfig) -> Self {
@@ -125,8 +115,8 @@ impl StreamReceiver {
             inject: VecDeque::new(),
             spectrum_fft: EnergyMatrix::new(Profile::Fast),
             tx_intervals: Vec::new(),
-            lane_hot_until: [0.0; LANES],
-            lane_reserved_until: [0.0; LANES],
+            hot_until: 0.0,
+            reserved_until: 0.0,
             keep_s: 240.0,
             my_call: u32::MAX,
         }
@@ -159,21 +149,14 @@ impl StreamReceiver {
         self.tx_intervals.retain(|&(_, e)| e > horizon);
     }
 
-    /// Lane status for listen-before-talk.
-    pub fn lane_status(&self) -> [LaneStatus; LANES] {
-        let mut out = [LaneStatus::default(); LANES];
-        for (lane, slot) in out.iter_mut().enumerate() {
-            let mut until = self.lane_hot_until[lane].max(self.lane_reserved_until[lane]);
-            for t in self
-                .tracked
-                .iter()
-                .filter(|t| !t.done && t.det.lane == lane)
-            {
-                until = until.max(t.predicted_end(self.fs));
-            }
-            slot.busy_until = until;
+    /// Absolute sample index until which the band is busy (energy, tracked
+    /// bursts, ACK reservations), for listen-before-talk.
+    pub fn busy_until(&self) -> f64 {
+        let mut until = self.hot_until.max(self.reserved_until);
+        for t in self.tracked.iter().filter(|t| !t.done) {
+            until = until.max(t.predicted_end(self.fs));
         }
-        out
+        until
     }
 
     /// Append a chunk of 12 kHz audio.
@@ -211,7 +194,6 @@ impl StreamReceiver {
         self.decode_due(&mut events);
         for t in self.tracked.iter().filter(|t| t.done) {
             self.recent.push(Recent {
-                lane: t.det.lane,
                 profile: t.det.profile,
                 start: t.det.start_sample,
             });
@@ -236,7 +218,7 @@ impl StreamReceiver {
         });
         // One Hann-windowed frame over the last symbol period. The
         // detector needs the rectangular window for tone orthogonality;
-        // this measurement does not, and Hann keeps a strong lane from
+        // this measurement does not, and Hann keeps a strong signal from
         // leaking into its neighbours.
         let w = self.spectrum_fft.window;
         let slice = &self.buf[self.buf.len() - w..];
@@ -254,31 +236,22 @@ impl StreamReceiver {
         let row: Vec<f32> = (lo..hi)
             .map(|b| 10.0 * self.spectrum_fft.raw_at(0, b).max(1e-12).log10())
             .collect();
-        // Lane energy for listen-before-talk: the hottest tone bin of a
-        // lane must stand LANE_HOT_DB above the passband median and within
-        // LANE_RELATIVE_DB of the hottest lane, so neighbour leakage in a
-        // quiet passband does not count.
+        // Band energy for listen-before-talk: the hottest tone bin must stand
+        // BAND_HOT_DB above the passband median.
         let mut sorted = row.clone();
         sorted.sort_by(|a, b| a.total_cmp(b));
         let floor = sorted[sorted.len() / 2];
-        let peaks: Vec<f32> = (0..LANES)
-            .map(|lane| {
-                (0..TONES)
-                    .map(|k| {
-                        10.0 * self
-                            .spectrum_fft
-                            .raw_at(0, self.spectrum_fft.tone_bin(lane, k))
-                            .max(1e-12)
-                            .log10()
-                    })
-                    .fold(f32::MIN, f32::max)
+        let peak_db = (0..TONES)
+            .map(|k| {
+                10.0 * self
+                    .spectrum_fft
+                    .raw_at(0, self.spectrum_fft.tone_bin(k))
+                    .max(1e-12)
+                    .log10()
             })
-            .collect();
-        let hottest = peaks.iter().copied().fold(f32::MIN, f32::max);
-        for (lane, &peak_db) in peaks.iter().enumerate() {
-            if peak_db - floor > LANE_HOT_DB && peak_db > hottest - LANE_RELATIVE_DB {
-                self.lane_hot_until[lane] = self.total as f64 + self.fs as f64;
-            }
+            .fold(f32::MIN, f32::max);
+        if peak_db - floor > BAND_HOT_DB {
+            self.hot_until = self.total as f64 + self.fs as f64;
         }
         events.push(RxEvent::Spectrum(row));
     }
@@ -304,24 +277,23 @@ impl StreamReceiver {
                 let mut tmp = det.clone();
                 fika_modem::Demodulator::new(self.fs).refine_timing(slice, &mut tmp);
                 det.start_sample = tmp.start_sample + window_abs;
-                let same = |lane: usize, p: Profile, s: f64| {
-                    lane == det.lane && p == det.profile && (s - det.start_sample).abs() < 2.0 * sps
+                let same = |p: Profile, s: f64| {
+                    p == det.profile && (s - det.start_sample).abs() < 2.0 * sps
                 };
                 if self
                     .tracked
                     .iter()
-                    .any(|t| same(t.det.lane, t.det.profile, t.det.start_sample))
-                    || self.recent.iter().any(|r| same(r.lane, r.profile, r.start))
+                    .any(|t| same(t.det.profile, t.det.start_sample))
+                    || self.recent.iter().any(|r| same(r.profile, r.start))
                 {
                     continue;
                 }
                 // The other profile's detector sees a burst as a smeared
                 // pattern; drop candidates overlapping a tracked burst of
-                // the other profile on the same lane.
+                // the other profile.
                 let preamble_end = det.start_sample + PREAMBLE_SYMBOLS as f64 * sps;
                 let shadowed = self.tracked.iter().any(|t| {
                     !t.done
-                        && t.det.lane == det.lane
                         && t.det.profile != det.profile
                         && det.start_sample < t.predicted_end(self.fs)
                         && preamble_end > t.det.start_sample
@@ -353,7 +325,7 @@ impl StreamReceiver {
         let fs = self.fs;
         let base = self.base;
         let total = self.total;
-        let mut reservations: Vec<(usize, f64)> = Vec::new();
+        let mut reservations: Vec<f64> = Vec::new();
         let my_call = self.my_call;
         let tx_intervals = self.tx_intervals.clone();
         let overlaps_tx = |a: f64, b: f64| tx_intervals.iter().any(|&(s, e)| a < e && b > s);
@@ -400,7 +372,7 @@ impl StreamReceiver {
                 (0, FrameKind::Long, Some(bytes)) => match Frame::parse(&bytes) {
                     Ok(Frame::Block0(b0)) => {
                         // SPEC §13: a direct message with ack_req to someone
-                        // else reserves the lane for its ACK window.
+                        // else reserves the band for its ACK window.
                         if b0.ack_req && b0.dest != Destination::Call(my_call) {
                             let end = t.det.start_sample
                                 + (PREAMBLE_SYMBOLS
@@ -409,10 +381,7 @@ impl StreamReceiver {
                                     * sps;
                             let ack_air =
                                 (PREAMBLE_SYMBOLS + FrameKind::Short.block_symbols()) as f64 * sps;
-                            reservations.push((
-                                t.det.lane,
-                                end + (2.0 + 1.0) * fs as f64 + ack_air + 2.0 * sps,
-                            ));
+                            reservations.push(end + (2.0 + 1.0) * fs as f64 + ack_air + 2.0 * sps);
                         }
                         let _ = t.asm.push(0, &bytes);
                         t.blocks_ok = 1;
@@ -444,8 +413,8 @@ impl StreamReceiver {
                 _ => t.done = true,
             }
         }
-        for (lane, until) in reservations {
-            self.lane_reserved_until[lane] = self.lane_reserved_until[lane].max(until);
+        for until in reservations {
+            self.reserved_until = self.reserved_until.max(until);
         }
     }
 
@@ -470,7 +439,7 @@ mod tests {
     use fika_modem::{Burst, Transmitter};
     use fika_proto::callsign;
 
-    fn burst_audio(text: &str, lane: usize) -> (Message, Vec<f32>) {
+    fn burst_audio(text: &str) -> (Message, Vec<f32>) {
         let msg = Message {
             sender: callsign::pack("SM6WJM"),
             dest: Destination::All,
@@ -480,14 +449,14 @@ mod tests {
         };
         let burst = Burst::new(FrameKind::Long, 5, msg.to_blocks().unwrap()).unwrap();
         let audio = Transmitter::new(12_000)
-            .render(&burst, lane, Profile::Fast, 0.0)
+            .render(&burst, Profile::Fast, 0.0)
             .unwrap();
         (msg, audio)
     }
 
     #[test]
     fn decodes_once_and_only_once_fed_in_chunks() {
-        let (msg, audio) = burst_audio("streaming test, hej hej", 2);
+        let (msg, audio) = burst_audio("streaming test, hej hej");
         let mut srx = StreamReceiver::new(SyncConfig::default());
         let mut got = Vec::new();
         let chunk = vec![0f32; 1200];
@@ -508,8 +477,8 @@ mod tests {
     }
 
     #[test]
-    fn lane_goes_busy_during_a_burst_and_burst_overlapping_tx_is_lost() {
-        let (_, audio) = burst_audio("busy lane", 1);
+    fn band_goes_busy_during_a_burst_and_burst_overlapping_tx_is_lost() {
+        let (_, audio) = burst_audio("busy band");
         let mut srx = StreamReceiver::new(SyncConfig::default());
         let chunk = vec![0f32; 1200];
         let mut busy_seen = false;
@@ -520,19 +489,13 @@ mod tests {
             srx.push(&chunk);
             let _ = srx.process();
             if i == 40 {
-                let st = srx.lane_status();
-
-                busy_seen = st[1].busy_until > srx.position() as f64;
-                assert!(
-                    st[0].busy_until <= srx.position() as f64,
-                    "lane 0 should be idle"
-                );
+                busy_seen = srx.busy_until() > srx.position() as f64;
             }
         }
-        assert!(busy_seen, "lane 1 busy while the burst is on");
+        assert!(busy_seen, "band busy while the burst is on");
 
         // Second burst, but we "transmit" over its block 0: reported lost.
-        let (_, audio) = burst_audio("cut by tx", 3);
+        let (_, audio) = burst_audio("cut by tx");
         let mut lost = false;
         let start = srx.position() as f64 + 12_000.0;
         srx.note_tx(start + 24_000.0, start + 36_000.0);

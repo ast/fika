@@ -33,9 +33,8 @@ pub fn run(args: RxArgs) -> Result<()> {
     );
     for det in &dets {
         println!(
-            "-- t={:7.2}s lane {} {} {} phase {:2} offset {:+6.1} Hz snr {:+5.1} dB score {:.0}",
+            "-- t={:7.2}s {} {} phase {:2} offset {:+6.1} Hz snr {:+5.1} dB score {:.0}",
             det.start_sample / fs,
-            det.lane,
             det.profile,
             det.kind.name(),
             det.phase,

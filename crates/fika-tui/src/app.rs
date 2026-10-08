@@ -99,13 +99,6 @@ impl App {
                 self.station.set_dest(arg);
                 self.status = format!("destination {}", self.station.dest_label);
             }
-            "lane" => match arg.parse::<usize>() {
-                Ok(l) if l < 4 => {
-                    self.station.lane = l;
-                    self.status = format!("transmit lane {l}");
-                }
-                _ => self.status = "usage: /lane 0..3".into(),
-            },
             "profile" | "speed" => match arg.parse::<fika_modem::Profile>() {
                 Ok(p) => {
                     self.station.profile = p;

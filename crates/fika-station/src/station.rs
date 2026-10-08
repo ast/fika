@@ -28,7 +28,6 @@ struct TxJob {
     /// Message id for status updates in the chat, if this is a message.
     msg_id: Option<u16>,
     burst: Burst,
-    lane: usize,
     profile: Profile,
     /// Listen before talk (everything except ACKs, SPEC §12).
     lbt: bool,
@@ -45,13 +44,13 @@ struct Shared {
     abort: AtomicBool,
     /// Epoch milliseconds when PTT last went off.
     ptt_off_ms: AtomicU64,
-    /// Per lane: epoch seconds until which the lane is busy.
-    lane_busy_until: Mutex<[f64; fika_modem::params::LANES]>,
+    /// Epoch seconds until which the band is busy.
+    busy_until: Mutex<f64>,
 }
 
 /// Receiver guard after PTT release, covering rig switching and audio latency.
 const RX_BLANK_GUARD_MS: u64 = 200;
-/// Longest a transmission waits for a busy lane before going anyway.
+/// Longest a transmission waits for a busy band before going anyway.
 const LBT_MAX_WAIT_S: f64 = 90.0;
 
 enum RxCommand {
@@ -81,7 +80,6 @@ pub struct Station {
     pub my_call: u32,
     pub dest: Destination,
     pub dest_label: String,
-    pub lane: usize,
     pub profile: Profile,
     pub level_db: f32,
     pub peak: f32,
@@ -168,7 +166,6 @@ impl Station {
             RigKind::Rigctld => format!("rigctld {}", cfg.rig.host),
         };
         let mut st = Self {
-            lane: cfg.modem.lane,
             profile,
             cfg,
             _audio: Some(audio),
@@ -309,7 +306,6 @@ impl Station {
             label: format!("message {msg_id:04X}"),
             msg_id: Some(msg_id),
             burst,
-            lane: self.lane,
             profile: self.profile,
             lbt: self.cfg.modem.listen_before_talk,
             ack_window_s: ack_window,
@@ -343,7 +339,6 @@ impl Station {
             label: "beacon".into(),
             msg_id: None,
             burst,
-            lane: self.lane,
             profile: self.profile,
             lbt: self.cfg.modem.listen_before_talk,
             ack_window_s: None,
@@ -357,7 +352,6 @@ impl Station {
             label: format!("ack {:04X}", ack.msg_id),
             msg_id: None,
             burst,
-            lane: self.lane,
             profile,
             lbt: false,
             ack_window_s: None,
@@ -408,8 +402,7 @@ impl Station {
             }
             StationEvent::Detected { det, .. } => {
                 self.push_log(format!(
-                    "burst lane {} {} {} {:+.1} dB offset {:+.0} Hz",
-                    det.lane,
+                    "burst {} {} {:+.1} dB offset {:+.0} Hz",
                     det.profile,
                     det.kind.name(),
                     det.snr_db(),
@@ -430,7 +423,6 @@ impl Station {
                     message.sender,
                     from.clone(),
                     det.snr_db(),
-                    det.lane,
                     det.profile,
                     *epoch,
                 );
@@ -467,14 +459,8 @@ impl Station {
                 let from = callsign::unpack(ack.sender)
                     .map(|c| c.to_string())
                     .unwrap_or("?".into());
-                self.heard.update(
-                    ack.sender,
-                    from.clone(),
-                    det.snr_db(),
-                    det.lane,
-                    det.profile,
-                    *epoch,
-                );
+                self.heard
+                    .update(ack.sender, from.clone(), det.snr_db(), det.profile, *epoch);
                 if ack.dest == self.my_call {
                     for line in self.chat.iter_mut().rev() {
                         if line.mine && line.msg_id == ack.msg_id {
@@ -497,7 +483,6 @@ impl Station {
                     beacon.sender,
                     from.clone(),
                     det.snr_db(),
-                    det.lane,
                     det.profile,
                     *epoch,
                 );
@@ -507,19 +492,16 @@ impl Station {
                 self.push_log(format!("beacon from {from}"));
             }
             StationEvent::BurstFailed { det } => {
-                self.push_log(format!(
-                    "burst lane {} {} failed to decode",
-                    det.lane, det.profile
-                ));
+                self.push_log(format!("burst {} failed to decode", det.profile));
             }
             StationEvent::BurstLost { det } => {
                 self.push_log(format!(
-                    "burst lane {} {} lost while we were transmitting",
-                    det.lane, det.profile
+                    "burst {} lost while we were transmitting",
+                    det.profile
                 ));
             }
-            StationEvent::TxWaiting { label, lane } => {
-                self.push_log(format!("{label}: lane {lane} busy, waiting"));
+            StationEvent::TxWaiting { label } => {
+                self.push_log(format!("{label}: band busy, waiting"));
             }
             StationEvent::TxStarted { label, airtime_s } => {
                 self.tx_busy = Some((label.clone(), Instant::now(), *airtime_s));
@@ -682,11 +664,7 @@ fn rx_thread(
         {
             let pos = srx.position() as f64;
             let fs = srx.fs() as f64;
-            let status = srx.lane_status();
-            let mut lanes = shared.lane_busy_until.lock().unwrap();
-            for (i, st) in status.iter().enumerate() {
-                lanes[i] = now + (st.busy_until - pos) / fs;
-            }
+            *shared.busy_until.lock().unwrap() = now + (srx.busy_until() - pos) / fs;
         }
         for e in events {
             let sev = match e {
@@ -725,16 +703,11 @@ fn rx_thread(
     }
 }
 
-/// Listen before talk (SPEC §12): wait for the lane to be idle, back off a
+/// Listen before talk: wait for the band to be idle, back off a
 /// random 0..7 slots of 0.5 s, and re-check. Gives up after `LBT_MAX_WAIT_S`.
 /// Returns false if the wait was aborted.
-fn listen_before_talk(
-    shared: &Shared,
-    lane: usize,
-    label: &str,
-    ev: &Sender<StationEvent>,
-) -> bool {
-    let busy = |shared: &Shared| shared.lane_busy_until.lock().unwrap()[lane] > epoch_secs();
+fn listen_before_talk(shared: &Shared, label: &str, ev: &Sender<StationEvent>) -> bool {
+    let busy = |shared: &Shared| *shared.busy_until.lock().unwrap() > epoch_secs();
     let started = Instant::now();
     let mut announced = false;
     loop {
@@ -743,7 +716,7 @@ fn listen_before_talk(
         }
         if started.elapsed().as_secs_f64() > LBT_MAX_WAIT_S {
             let _ = ev.send(StationEvent::Log(format!(
-                "{label}: lane {lane} still busy after {LBT_MAX_WAIT_S:.0} s, transmitting anyway"
+                "{label}: band still busy after {LBT_MAX_WAIT_S:.0} s, transmitting anyway"
             )));
             return true;
         }
@@ -752,7 +725,6 @@ fn listen_before_talk(
                 announced = true;
                 let _ = ev.send(StationEvent::TxWaiting {
                     label: label.to_string(),
-                    lane,
                 });
             }
             thread::sleep(Duration::from_millis(250));
@@ -845,13 +817,13 @@ fn tx_thread(
             }
             thread::sleep(Duration::from_millis(50));
         }
-        if job.lbt && !listen_before_talk(&shared, job.lane, &job.label, &ev) {
+        if job.lbt && !listen_before_talk(&shared, &job.label, &ev) {
             abort_job(&job, &ev);
             continue;
         }
         let airtime = job.burst.airtime_s(job.profile);
         let offset = live.as_ref().map_or(0.0, |l| l.offset_hz);
-        let audio = match tx_dev.render(&job.burst, job.lane, job.profile, offset) {
+        let audio = match tx_dev.render(&job.burst, job.profile, offset) {
             Ok(a) => a,
             Err(e) => {
                 let _ = ev.send(StationEvent::Log(format!("tx render failed: {e}")));
@@ -878,7 +850,7 @@ fn tx_thread(
             airtime_s: airtime,
         });
         thread::sleep(Duration::from_millis(rig_cfg.tx_delay_ms));
-        if loopback && let Ok(a12) = tx_12k.render(&job.burst, job.lane, job.profile, 0.0) {
+        if loopback && let Ok(a12) = tx_12k.render(&job.burst, job.profile, 0.0) {
             let _ = rx_cmds.send(RxCommand::Inject(a12));
         }
         let completed = output.play_blocking(&audio, &shared.abort);

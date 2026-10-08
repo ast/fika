@@ -1,19 +1,19 @@
-//! Block demodulation (SPEC §8.2): per-symbol tone energies at the detected
-//! time and frequency, hop removal, max-log bit LLRs, deinterleave, LDPC.
+//! Block demodulation: per-symbol tone energies at the detected time and
+//! frequency, per-bin noise normalisation, interference-aware symbol
+//! likelihoods, hop removal, GF(64) LDPC decoding.
 
 use std::f64::consts::PI;
 
 use num_complex::Complex64;
 
-use crate::energy::EnergyMatrix;
-use crate::frame_kind::FrameKind;
+use fika_nb::gf64::Q;
+use fika_nb::{Decoder, LikelihoodParams, symbol_likelihoods};
+
 use crate::hop;
-use crate::interleave::deinterleave;
-use crate::ldpc::Ldpc;
-use crate::params::{BIN_HZ, BITS_PER_SYMBOL, PILOT_SYMBOLS, PREAMBLE_SYMBOLS, TONES, tone_hz};
-use crate::profile::Profile;
-use crate::symbols::value_bit;
+use crate::params::{BIN_HZ, PILOT_SYMBOLS, PREAMBLE_SYMBOLS, SYNC_SYMBOLS, TONES, tone_hz};
+use crate::symbols::symbols_to_bytes;
 use crate::sync::Detection;
+use crate::tx::code;
 
 /// Result of decoding one block.
 #[derive(Clone, Debug)]
@@ -23,26 +23,25 @@ pub struct BlockDecode {
     pub iterations: usize,
     /// Mean peak-to-noise ratio over the block's symbols (linear).
     pub es_n0: f32,
+    /// Interferer occupancy estimate used for the likelihoods.
+    pub q: f32,
 }
 
 pub struct Demodulator {
     fs: u32,
-    ldpc_long: Ldpc,
-    ldpc_short: Ldpc,
     pub max_iters: usize,
 }
 
 impl Demodulator {
     pub fn new(fs: u32) -> Self {
-        Self {
-            fs,
-            ldpc_long: Ldpc::new(FrameKind::Long),
-            ldpc_short: Ldpc::new(FrameKind::Short),
-            max_iters: 50,
-        }
+        Self { fs, max_iters: 50 }
     }
 
-    /// Energies of the 16 tones over `sps` samples starting at `start`,
+    pub fn fs(&self) -> u32 {
+        self.fs
+    }
+
+    /// Energies of the 64 tones over `sps` samples starting at `start`,
     /// with tone 0 at `f0` Hz. Samples outside the buffer count as zero.
     pub fn tone_energies(&self, samples: &[f32], start: i64, sps: usize, f0: f64) -> [f32; TONES] {
         let mut acc = [Complex64::new(0.0, 0.0); TONES];
@@ -52,13 +51,20 @@ impl Demodulator {
                 Complex64::from_polar(1.0, -2.0 * PI * (f0 + BIN_HZ * k as f64) / self.fs as f64)
             })
             .collect();
-        for n in 0..sps {
-            let idx = start + n as i64;
-            let x = if idx >= 0 && (idx as usize) < samples.len() {
-                samples[idx as usize] as f64
-            } else {
-                0.0
-            };
+        let lo = (start.max(0) as usize).min(samples.len());
+        let hi = ((start + sps as i64).max(0) as usize).min(samples.len());
+        // Advance the phasors to `lo` if the start was clipped.
+        if lo as i64 > start {
+            let skip = (lo as i64 - start) as f64;
+            for (k, p) in ph.iter_mut().enumerate() {
+                *p = Complex64::from_polar(
+                    1.0,
+                    -2.0 * PI * (f0 + BIN_HZ * k as f64) * skip / self.fs as f64,
+                );
+            }
+        }
+        for &x in &samples[lo..hi.max(lo)] {
+            let x = x as f64;
             for k in 0..TONES {
                 acc[k] += ph[k] * x;
                 ph[k] *= step[k];
@@ -72,26 +78,24 @@ impl Demodulator {
     }
 
     /// Refine `det.start_sample` in the sample domain: scan ±1/8 symbol in
-    /// steps of 1/64 symbol and keep the offset that maximises the energy
-    /// of the 16 SYNC tones. The frame-grid estimate is only good to a few
-    /// percent of a symbol, which costs about a decibel.
+    /// steps of 1/64 symbol for the maximum summed energy of the 16 SYNC
+    /// tones.
     pub fn refine_timing(&self, samples: &[f32], det: &mut Detection) {
         let sps = det
             .profile
             .samples_per_symbol(self.fs)
             .expect("sample rate");
-        let f0 = tone_hz(det.lane, 0) + det.freq_offset_hz;
-        let seq = det.kind.sync_sequence();
+        let f0 = tone_hz(0) + det.freq_offset_hz;
         let step = (sps / 64).max(1) as i64;
         let half = (sps / 8) as i64;
         let mut best = (f32::MIN, 0i64);
         let mut d = -half;
         while d <= half {
             let start = det.start_sample.round() as i64 + d;
-            let e: f32 = (0..crate::params::SYNC_SYMBOLS)
+            let e: f32 = (0..SYNC_SYMBOLS)
                 .map(|n| {
                     let s = start + (n * sps) as i64;
-                    self.tone_energies(samples, s, sps, f0)[seq[n] as usize]
+                    self.tone_energies(samples, s, sps, f0)[det.kind.sync_tone(n) as usize]
                 })
                 .sum();
             if e > best.0 {
@@ -105,90 +109,70 @@ impl Demodulator {
     /// Decode block `index` of the burst described by `det`.
     pub fn decode_block(&mut self, samples: &[f32], det: &Detection, index: usize) -> BlockDecode {
         let kind = det.kind;
-        let profile: Profile = det.profile;
-        let sps = profile.samples_per_symbol(self.fs).expect("sample rate");
-        let f0 = tone_hz(det.lane, 0) + det.freq_offset_hz;
+        let sps = det
+            .profile
+            .samples_per_symbol(self.fs)
+            .expect("sample rate");
+        let f0 = tone_hz(0) + det.freq_offset_hz;
         let block_start_symbol = PREAMBLE_SYMBOLS + index * kind.block_symbols();
-        let m0 = index * kind.block_symbols(); // hop counter at block start
-
-        // Energies per symbol, tone-indexed (hop not yet removed).
+        let m0 = index * kind.block_symbols();
         let n_data = kind.data_symbols();
+
+        // Tone-indexed energies per data symbol.
         let mut e_tone_all: Vec<[f32; TONES]> = Vec::with_capacity(n_data);
         for s in 0..n_data {
             let sym = block_start_symbol + PILOT_SYMBOLS + s;
             let start = (det.start_sample + sym as f64 * sps as f64).round() as i64;
             e_tone_all.push(self.tone_energies(samples, start, sps, f0));
         }
-        // Per-tone-bin noise level: the data hop puts our signal on any one
-        // bin only one symbol in sixteen, so the 75th percentile of a bin's
-        // energy over the block measures that bin's noise *and* whatever
-        // interferer sits on it. Normalising per bin turns a carrier or
-        // keyed CW inside the lane into a quiet bin instead of a winner
-        // in every symbol's max-log decision. (A blind per-tone gain
-        // equaliser from the top sixteenth was tried and dropped: it did
-        // not rescue reverberant acoustic paths and cost 0.5 dB on AWGN.)
-        let mut noise_tone = [1f32; TONES];
+        // Per-tone-bin noise level: the hop puts the wanted signal on any one
+        // bin only one symbol in 64, so the 75th percentile of a bin over the
+        // block measures its noise plus whatever interferer sits on it.
         let mut col: Vec<f32> = Vec::with_capacity(n_data);
-        for (k, nt) in noise_tone.iter_mut().enumerate() {
+        for k in 0..TONES {
             col.clear();
             col.extend(e_tone_all.iter().map(|e| e[k]));
             let idx = (col.len() * 3 / 4).min(col.len() - 1);
             let (_, p75, _) = col.select_nth_unstable_by(idx, |a, b| a.total_cmp(b));
-            *nt = (*p75 / 4f32.ln()).max(1e-12);
-        }
-        // Hop removal and SNR estimate on the normalised energies.
-        let mut e_all: Vec<[f32; TONES]> = Vec::with_capacity(n_data);
-        let mut peak_sum = 0f64;
-        for (s, e_tone) in e_tone_all.iter().enumerate() {
-            let m = m0 + PILOT_SYMBOLS + s;
-            let mut e_val = [0f32; TONES];
-            for (tone, &e) in e_tone.iter().enumerate() {
-                e_val[hop::unmap(tone as u8, m, det.phase) as usize] = e / noise_tone[tone];
+            let noise = (*p75 / 4f32.ln()).max(1e-12);
+            for e in e_tone_all.iter_mut() {
+                e[k] /= noise;
             }
-            peak_sum += e_val.iter().copied().fold(0f32, f32::max) as f64;
-            e_all.push(e_val);
         }
-        let es_n0 = (peak_sum as f32 / n_data as f32 - 1.0).max(0.0);
-        let noise = 1f32;
+        // Es/N0 and interferer occupancy from the normalised energies.
+        let peak_mean = e_tone_all
+            .iter()
+            .map(|e| e.iter().copied().fold(0f32, f32::max))
+            .sum::<f32>()
+            / n_data as f32;
+        let es_n0 = (peak_mean - 1.0).max(0.0);
+        let q = fika_nb::likelihood::estimate_q(&e_tone_all, 4.0);
+        let params = LikelihoodParams { gamma: es_n0, q };
 
-        // Max-log LLRs, positive = bit 0.
-        let mut llrs_air = Vec::with_capacity(n_data * BITS_PER_SYMBOL);
-        for e_val in &e_all {
-            for b in 0..BITS_PER_SYMBOL {
-                let mut m0v = f32::NEG_INFINITY;
-                let mut m1v = f32::NEG_INFINITY;
-                for (d, &e) in e_val.iter().enumerate() {
-                    let s = e / noise;
-                    if value_bit(d as u8, b) == 0 {
-                        m0v = m0v.max(s);
-                    } else {
-                        m1v = m1v.max(s);
-                    }
+        // Likelihoods, hop removed.
+        let lik: Vec<[f32; Q]> = e_tone_all
+            .iter()
+            .enumerate()
+            .map(|(s, e)| {
+                let m = m0 + PILOT_SYMBOLS + s;
+                let p = symbol_likelihoods(e, params);
+                let mut out = [0f32; Q];
+                for (tone, &v) in p.iter().enumerate() {
+                    out[hop::unmap(tone as u8, m, det.phase) as usize] = v;
                 }
-                llrs_air.push(m0v - m1v);
-            }
-        }
-        let (rows, cols) = kind.interleaver();
-        let llrs = deinterleave(&llrs_air, rows, cols);
-        let ldpc = match kind {
-            FrameKind::Long => &mut self.ldpc_long,
-            FrameKind::Short => &mut self.ldpc_short,
-        };
-        let (bytes, iterations) = ldpc.decode(&llrs, self.max_iters);
+                out
+            })
+            .collect();
+        let mut dec = Decoder::new(code());
+        dec.max_iters = self.max_iters;
+        let (cw, iterations) = dec.decode(&lik);
+        let bytes = cw.map(|cw| symbols_to_bytes(&code().info_of(&cw)));
         BlockDecode {
             index,
             bytes,
             iterations,
             es_n0,
+            q,
         }
     }
-
-    /// Helper for callers that already have an energy matrix: nothing yet,
-    /// reserved for successive cancellation.
-    pub fn fs(&self) -> u32 {
-        self.fs
-    }
 }
-
-#[allow(dead_code)]
-fn _unused(_: &EnergyMatrix) {}

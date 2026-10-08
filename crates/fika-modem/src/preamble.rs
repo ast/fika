@@ -1,24 +1,26 @@
-//! Preamble construction (SPEC §6.1): 16 SYNC symbols from the frame kind's
-//! Costas sequence, then 8 PHASE symbols from the PILOT sequence shifted by
-//! the pattern phase.
+//! Preamble: 16 SYNC symbols (long on tones 4k, short on 4k+2), then 8
+//! PHASE symbols from the PILOT sequence shifted by the pattern phase on
+//! tones 4k+1.
 
-use crate::costas::PILOT;
+use crate::costas::{PHASE_RESIDUE, PILOT, scaled};
 use crate::frame_kind::FrameKind;
-use crate::params::{PHASE_SYMBOLS, PREAMBLE_SYMBOLS, SYNC_SYMBOLS, TONES};
+use crate::params::{PHASE_SYMBOLS, PHASES, PREAMBLE_SYMBOLS, SYNC_SYMBOLS};
 
 pub fn tones(kind: FrameKind, phase: u8) -> [u8; PREAMBLE_SYMBOLS] {
     let mut out = [0u8; PREAMBLE_SYMBOLS];
-    out[..SYNC_SYMBOLS].copy_from_slice(kind.sync_sequence());
+    for (n, slot) in out[..SYNC_SYMBOLS].iter_mut().enumerate() {
+        *slot = kind.sync_tone(n);
+    }
     for n in 0..PHASE_SYMBOLS {
-        out[SYNC_SYMBOLS + n] = PILOT[(n + phase as usize) % TONES];
+        out[SYNC_SYMBOLS + n] = phase_tone(n, phase);
     }
     out
 }
 
-/// Tone of PHASE symbol `n` for a given phase, used by the detector.
+/// Tone of PHASE symbol `n` for a given phase.
 #[inline]
 pub fn phase_tone(n: usize, phase: u8) -> u8 {
-    PILOT[(n + phase as usize) % TONES]
+    scaled(PILOT[(n + phase as usize) % PHASES], PHASE_RESIDUE)
 }
 
 #[cfg(test)]
@@ -32,17 +34,18 @@ mod tests {
                 let same = (0..PHASE_SYMBOLS)
                     .filter(|&n| phase_tone(n, a) == phase_tone(n, b))
                     .count();
-                assert!(same <= 1, "phases {a} {b} share {same}");
+                assert!(same <= 1);
             }
         }
     }
 
     #[test]
-    fn sync_is_phase_independent() {
+    fn sync_depends_on_kind_only() {
         let a = tones(FrameKind::Long, 0);
         let b = tones(FrameKind::Long, 9);
         assert_eq!(a[..16], b[..16]);
         assert_ne!(a[16..], b[16..]);
-        assert_eq!(tones(FrameKind::Short, 0)[..16], crate::costas::SHORT);
+        assert_ne!(tones(FrameKind::Short, 0)[..16], a[..16]);
+        assert!(a.iter().all(|&t| t < 64));
     }
 }

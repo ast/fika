@@ -1,16 +1,16 @@
-//! Frame layouts (SPEC §7.3–§7.7). All frames are exactly one LDPC info
-//! block: 32 bytes for long-frame blocks, 16 bytes for short frames.
+//! Frame layouts. Every frame is exactly one GF(64) LDPC info block of
+//! 48 bytes (384 bits); short frames (ACK, beacon) pad the rest.
 
 use crate::bits::{BitReader, BitWriter, bytes_to_bits};
 use crate::crc16::crc16;
 use crate::error::ProtoError;
 
 pub const PROTOCOL_VERSION: u8 = 0;
-pub const LONG_BLOCK_BYTES: usize = 32;
-pub const SHORT_BLOCK_BYTES: usize = 16;
+pub const LONG_BLOCK_BYTES: usize = 48;
+pub const SHORT_BLOCK_BYTES: usize = 48;
 /// Payload bits in block 0 and in each continuation block.
-pub const BLOCK0_PAYLOAD_BITS: usize = 154;
-pub const CONT_PAYLOAD_BITS: usize = 221;
+pub const BLOCK0_PAYLOAD_BITS: usize = 282;
+pub const CONT_PAYLOAD_BITS: usize = 349;
 pub const MAX_BLOCKS: usize = 8;
 
 pub fn payload_capacity(blocks: usize) -> usize {
@@ -78,7 +78,7 @@ pub struct Block0 {
     pub hop: u8,
     pub ack_req: bool,
     pub raw_text: bool,
-    /// Exactly 154 payload bits.
+    /// Exactly 282 payload bits.
     pub payload: Vec<u8>,
 }
 
@@ -87,7 +87,7 @@ pub struct Block0 {
 pub struct Continuation {
     pub seq: u8,
     pub msg_id: u16,
-    /// Exactly 221 payload bits.
+    /// Exactly 349 payload bits.
     pub payload: Vec<u8>,
 }
 
@@ -190,7 +190,7 @@ impl Ack {
         w.push(self.dest as u64, 28);
         w.push(self.msg_id as u64, 16);
         w.push((self.snr_db.clamp(-32, 31) as i64 & 0x3F) as u64, 6);
-        w.push(0, 29);
+        w.pad_to(SHORT_BLOCK_BYTES * 8 - 16);
         finish(&mut w, SHORT_BLOCK_BYTES * 8)
     }
 }
@@ -205,7 +205,7 @@ impl Beacon {
         w.push(self.group_tags[0] as u64, 12);
         w.push(self.group_tags[1] as u64, 12);
         w.push(self.status as u64, 4);
-        w.push(0, 36);
+        w.pad_to(SHORT_BLOCK_BYTES * 8 - 16);
         finish(&mut w, SHORT_BLOCK_BYTES * 8)
     }
 }
@@ -213,20 +213,15 @@ impl Beacon {
 impl Frame {
     /// Parse block 0 of a long frame or a whole short frame.
     pub fn parse(bytes: &[u8]) -> Result<Frame, ProtoError> {
-        let expected = match bytes.len() {
-            LONG_BLOCK_BYTES => LONG_BLOCK_BYTES,
-            SHORT_BLOCK_BYTES => SHORT_BLOCK_BYTES,
-            n => return Err(ProtoError::BlockLength(n, LONG_BLOCK_BYTES)),
-        };
-        let bits = check(bytes, expected)?;
+        let bits = check(bytes, LONG_BLOCK_BYTES)?;
         let mut r = BitReader::new(&bits);
         let ver = r.read(2) as u8;
         if ver != PROTOCOL_VERSION {
             return Err(ProtoError::Version(ver));
         }
         let ty = FrameType::try_from(r.read(3) as u8)?;
-        match (ty, expected) {
-            (FrameType::Message, LONG_BLOCK_BYTES) => {
+        match ty {
+            FrameType::Message => {
                 let sender = r.read(28) as u32;
                 let dt = r.read(2);
                 let dv = r.read(28);
@@ -247,7 +242,7 @@ impl Frame {
                     payload,
                 }))
             }
-            (FrameType::Ack, SHORT_BLOCK_BYTES) => {
+            FrameType::Ack => {
                 let sender = r.read(28) as u32;
                 let dest = r.read(28) as u32;
                 let msg_id = r.read(16) as u16;
@@ -260,7 +255,7 @@ impl Frame {
                     snr_db,
                 }))
             }
-            (FrameType::Beacon, SHORT_BLOCK_BYTES) => {
+            FrameType::Beacon => {
                 let sender = r.read(28) as u32;
                 let grid = r.read(15) as u16;
                 let group_tags = [r.read(12) as u16, r.read(12) as u16];
@@ -272,7 +267,6 @@ impl Frame {
                     status,
                 }))
             }
-            _ => Err(ProtoError::Field("frame type does not match block size")),
         }
     }
 }
@@ -296,7 +290,7 @@ mod tests {
                 .collect(),
         };
         let bytes = b.pack();
-        assert_eq!(bytes.len(), 32);
+        assert_eq!(bytes.len(), 48);
         assert_eq!(Frame::parse(&bytes).unwrap(), Frame::Block0(b));
         let mut bad = bytes.clone();
         bad[5] ^= 1;
