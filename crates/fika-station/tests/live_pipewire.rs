@@ -98,9 +98,28 @@ fn message_crosses_the_ether_between_two_stations() {
             Some("över etern, hej AD8KM"),
             "B should decode A's message"
         );
+        // And back: B answers, A decodes it (B's own false slow candidates
+        // from A's burst must not blind it, nor A's from its own).
+        b.send_text("hej SM6WJM, hör dig fint").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut back = None;
+        while Instant::now() < deadline && back.is_none() {
+            b.poll();
+            for ev in a.poll() {
+                if let StationEvent::Message { message, det, .. } = ev {
+                    eprintln!("A decoded at {:+.1} dB", det.snr_db());
+                    back = Some(message.text);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
         assert_eq!(
-            a.chat.iter().filter(|c| !c.mine).count(),
-            0,
+            back.as_deref(),
+            Some("hej SM6WJM, hör dig fint"),
+            "A should decode B's reply"
+        );
+        assert!(
+            a.chat.iter().all(|c| c.mine || c.from != "SM6WJM"),
             "A heard itself while keyed"
         );
     });

@@ -612,6 +612,7 @@ fn rx_thread(
     let mut blank_start: Option<f64> = None;
     let mut noise_rng = rand::rngs::StdRng::seed_from_u64(epoch_secs() as u64);
     let noise_dist = live_noise.map(|s| rand_distr::Normal::new(0.0f32, s).unwrap());
+    let (mut level_sq, mut level_peak, mut level_n) = (0f32, 0f32, 0usize);
     loop {
         while let Ok(cmd) = cmds.try_recv() {
             match cmd {
@@ -633,6 +634,22 @@ fn rx_thread(
             if due > synthetic_sent {
                 out12.resize((due - synthetic_sent) as usize, 0.0);
                 synthetic_sent = due;
+            }
+        }
+        // Input level on the raw capture, reported four times a second.
+        if !out12.is_empty() {
+            level_sq += out12.iter().map(|v| v * v).sum::<f32>();
+            level_peak = level_peak.max(out12.iter().fold(0f32, |m, v| m.max(v.abs())));
+            level_n += out12.len();
+            if level_n >= srx.fs() as usize / 4 {
+                let rms = (level_sq / level_n as f32).sqrt();
+                let _ = ev.send(StationEvent::Level {
+                    rms_db: 20.0 * rms.max(1e-6).log10(),
+                    peak: level_peak,
+                });
+                level_sq = 0.0;
+                level_peak = 0.0;
+                level_n = 0;
             }
         }
         if let Some(dist) = &noise_dist {
@@ -693,7 +710,6 @@ fn rx_thread(
                 },
                 RxEvent::Failed(det) => StationEvent::BurstFailed { det },
                 RxEvent::Lost(det) => StationEvent::BurstLost { det },
-                RxEvent::Level { rms_db, peak } => StationEvent::Level { rms_db, peak },
                 RxEvent::Spectrum(row) => StationEvent::Spectrum(row),
             };
             if ev.send(sev).is_err() {

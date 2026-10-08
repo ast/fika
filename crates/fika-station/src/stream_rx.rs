@@ -29,10 +29,6 @@ pub enum RxEvent {
     Failed(Detection),
     /// The burst overlapped one of our own transmissions.
     Lost(Detection),
-    Level {
-        rms_db: f32,
-        peak: f32,
-    },
     Spectrum(Vec<f32>),
 }
 
@@ -51,9 +47,10 @@ impl Tracked {
         self.det.profile.samples_per_symbol(fs).unwrap() as f64
     }
 
-    /// Predicted end: known block count, or the maximum until block 0 says.
+    /// Predicted end: the known block count, or one block until block 0
+    /// says (a false detection must not look busy for eight blocks).
     fn predicted_end(&self, fs: u32) -> f64 {
-        let blocks = self.total.unwrap_or(self.det.kind.max_blocks());
+        let blocks = self.total.unwrap_or(1);
         self.det.start_sample
             + (PREAMBLE_SYMBOLS + blocks * self.det.kind.block_symbols()) as f64 * self.sps(fs)
     }
@@ -62,6 +59,7 @@ impl Tracked {
 struct Recent {
     profile: Profile,
     start: f64,
+    end: f64,
 }
 
 pub struct StreamReceiver {
@@ -196,6 +194,7 @@ impl StreamReceiver {
             self.recent.push(Recent {
                 profile: t.det.profile,
                 start: t.det.start_sample,
+                end: t.predicted_end(self.fs),
             });
         }
         self.tracked.retain(|t| !t.done);
@@ -205,17 +204,12 @@ impl StreamReceiver {
     }
 
     fn level_and_spectrum(&mut self, events: &mut Vec<RxEvent>) {
+        // The input level itself is measured by the caller on the raw
+        // capture, before any synthetic band noise is mixed in.
         let n = (self.fs as f64 * SPECTRUM_EVERY_S) as usize;
         if self.buf.len() < n.max(self.spectrum_fft.window) {
             return;
         }
-        let tail = &self.buf[self.buf.len() - n..];
-        let rms = (tail.iter().map(|v| v * v).sum::<f32>() / n as f32).sqrt();
-        let peak = tail.iter().fold(0f32, |m, v| m.max(v.abs()));
-        events.push(RxEvent::Level {
-            rms_db: 20.0 * rms.max(1e-6).log10(),
-            peak,
-        });
         // One Hann-windowed frame over the last symbol period. The
         // detector needs the rectangular window for tone orthogonality;
         // this measurement does not, and Hann keeps a strong signal from
@@ -289,15 +283,22 @@ impl StreamReceiver {
                     continue;
                 }
                 // The other profile's detector sees a burst as a smeared
-                // pattern; drop candidates overlapping a tracked burst of
-                // the other profile.
+                // pattern. A fast burst seen through the slow detector is
+                // the common false trigger, so drop slow candidates that
+                // overlap a fast burst, tracked or recently finished. Never
+                // the reverse: a false slow candidate must not blind the
+                // station to fast bursts.
                 let preamble_end = det.start_sample + PREAMBLE_SYMBOLS as f64 * sps;
-                let shadowed = self.tracked.iter().any(|t| {
-                    !t.done
-                        && t.det.profile != det.profile
-                        && det.start_sample < t.predicted_end(self.fs)
-                        && preamble_end > t.det.start_sample
-                });
+                let overlaps =
+                    |start: f64, end: f64| det.start_sample < end && preamble_end > start;
+                let shadowed = det.profile == Profile::Slow
+                    && (self.tracked.iter().any(|t| {
+                        t.det.profile == Profile::Fast
+                            && overlaps(t.det.start_sample, t.predicted_end(self.fs))
+                    }) || self
+                        .recent
+                        .iter()
+                        .any(|r| r.profile == Profile::Fast && overlaps(r.start, r.end)));
                 if shadowed {
                     continue;
                 }
