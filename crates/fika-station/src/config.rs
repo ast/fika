@@ -108,6 +108,11 @@ pub struct ModemCfg {
     pub profile: String,
     /// SYNC detection threshold.
     pub threshold: f32,
+    /// Wait for the lane to be quiet before transmitting. Off by default:
+    /// HF is never quiet, and the energy test would hold you for noise.
+    pub listen_before_talk: bool,
+    /// Ask for an acknowledgement on direct messages.
+    pub request_ack: bool,
 }
 
 impl Default for ModemCfg {
@@ -116,6 +121,8 @@ impl Default for ModemCfg {
             lane: 1,
             profile: "fast".into(),
             threshold: 40.0,
+            listen_before_talk: false,
+            request_ack: false,
         }
     }
 }
@@ -177,6 +184,8 @@ set_data_mode = false
 lane = 1                   # 0..3
 profile = "fast"           # fast or slow
 threshold = 40.0
+listen_before_talk = false # hold transmissions while the lane is busy
+request_ack = false        # ask for an ACK on direct messages
 "#
     }
 }

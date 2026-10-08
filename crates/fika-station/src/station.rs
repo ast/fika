@@ -252,7 +252,7 @@ impl Station {
 
     pub fn send_text(&mut self, text: &str) -> Result<()> {
         let msg_id: u16 = rand::rng().random();
-        let ack_req = matches!(self.dest, Destination::Call(_));
+        let ack_req = self.cfg.modem.request_ack && matches!(self.dest, Destination::Call(_));
         let message = Message {
             sender: self.my_call,
             dest: self.dest,
@@ -289,7 +289,7 @@ impl Station {
             burst,
             lane: self.lane,
             profile: self.profile,
-            lbt: true,
+            lbt: self.cfg.modem.listen_before_talk,
             ack_window_s: ack_window,
         })?;
         Ok(())
@@ -323,7 +323,7 @@ impl Station {
             burst,
             lane: self.lane,
             profile: self.profile,
-            lbt: true,
+            lbt: self.cfg.modem.listen_before_talk,
             ack_window_s: None,
         })?;
         Ok(())

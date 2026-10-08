@@ -49,3 +49,4 @@ tui-loopback:
 # Channel regression suite: decode rate per scenario against a floor.
 channels:
     cargo test --release -p fika-cli --test channels -- --ignored --nocapture
+

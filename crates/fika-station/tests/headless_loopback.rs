@@ -51,7 +51,7 @@ fn transmission_waits_for_a_busy_lane() {
     use fika_proto::{Destination, Message, callsign};
 
     let mut cfg: Config = toml::from_str(
-        "[station]\ncall = \"SM6WJM\"\n[audio]\ninput = \"none\"\noutput = \"none\"\nloopback = true\n[modem]\nlane = 2\n",
+        "[station]\ncall = \"SM6WJM\"\n[audio]\ninput = \"none\"\noutput = \"none\"\nloopback = true\n[modem]\nlane = 2\nlisten_before_talk = true\n",
     )
     .unwrap();
     cfg.rig.tx_delay_ms = 10;
