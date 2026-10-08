@@ -155,13 +155,11 @@ impl LineEditor {
                     self.insert(c);
                 }
             }
-            (KeyCode::Char('t'), true, _) => {
+            (KeyCode::Char('t'), true, _) if n >= 2 => {
                 // Transpose the two characters before the cursor (at end) or around it.
-                if n >= 2 {
-                    let i = self.cursor.clamp(1, n - 1);
-                    self.chars.swap(i - 1, i);
-                    self.cursor = (i + 1).min(n);
-                }
+                let i = self.cursor.clamp(1, n - 1);
+                self.chars.swap(i - 1, i);
+                self.cursor = (i + 1).min(n);
             }
             // History.
             (KeyCode::Char('p'), true, _) | (KeyCode::Up, _, _) => self.history_up(),
