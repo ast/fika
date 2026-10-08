@@ -129,7 +129,13 @@ digital operators actually gather.
 
 The hop pattern is derived from a Costas array of order 16. A Costas array is a
 permutation whose two-dimensional autocorrelation has at most one coincidence
-for any non-zero shift in time and frequency. That property is what makes the
+for any non-zero shift in time and frequency. The first draft marked short
+frames with the flipped sequence 15 − C, which is also Costas; the simulator
+immediately produced ghost detections eight symbols off every short burst,
+because for a Welch array 15 − C is C cyclically shifted by eight. Short
+frames, the PHASE block and the pilots now use genuinely different Welch
+arrays (primitive roots 6 and 7 against 3), chosen so that no shift of one
+has more than four coincidences with another. That property is what makes the
 preamble a near-ideal synchronisation sequence: a receiver can find a burst's
 start time and frequency offset with no ambiguity, and two overlapping
 preambles with different offsets coincide on at most one symbol.
@@ -334,9 +340,17 @@ does not block the modem.
   spectrum. The emission bandwidth argument is strong; it has not been tested.
 - **Wide profile.** Parameters for a serial-tone PSK profile in the
   wide-digimode segments, behind the same framing.
-- **Sensitivity validation.** The SNR thresholds in the spec are derived from
-  theory. The simulator in roadmap v1 must confirm them on AWGN and on a
-  Watterson channel before they are quoted as properties of the mode.
+- **Sensitivity.** Measured on AWGN with `fika sim`: 50 % decode at about
+  −11.5 dB fast and −18.7 dB slow, 1 dB behind theory. Candidates for the
+  missing decibel: normalised rather than plain min-sum decoding, the energy
+  the Gaussian transitions take out of the measured bin in the fast profile,
+  and the frame-grid frequency estimate. Under CCIR moderate fading the fast
+  profile needs about −7 dB and under slow selective fading about −6 dB,
+  because a 500 Hz lane can sit in a two-path notch for a whole burst.
+- **False detections.** Chance matches of data symbols in a strong burst's
+  own lane still pass the detector at roughly one per burst. Each costs one
+  failed LDPC decode and never outranks a real preamble, but a cleaner
+  discriminator would be welcome.
 - **Robust profile.** A rate one-quarter code, or repetition of the (512,256)
   block, would decode through an equal-power overlap and add about 3 dB of
   sensitivity at half the speed. Worth a profile slot if on-air experience

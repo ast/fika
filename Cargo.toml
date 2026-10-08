@@ -1,0 +1,38 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/fika-modem",
+  "crates/fika-proto",
+  "crates/fika-channel",
+  "crates/fika-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Albin Stigö SM6WJM <albin.stigo@gmail.com>"]
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+num-complex = "0.4"
+rustfft = "6"
+labrador-ldpc = "1"
+rand = "0.9"
+rand_distr = "0.5"
+hound = "3"
+unicode-normalization = "0.1"
+fika-modem = { path = "crates/fika-modem" }
+fika-proto = { path = "crates/fika-proto" }
+fika-channel = { path = "crates/fika-channel" }
+
+[profile.release]
+debug = 1
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

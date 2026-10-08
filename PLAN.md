@@ -85,12 +85,16 @@ and neither blocks the modem. v1 is one CLI binary and rigctld.
 ## Roadmap
 
 1. **v0 — specification.** `docs/SPEC.md` and `docs/DESIGN.md`. This phase.
-2. **v1 — modem and simulator.** Rust workspace: `fika-modem` (GFSK synthesis,
-   FFT energy matrix, Costas sync, soft demodulation, LDPC), `fika-sim` (AWGN
-   and Watterson HF channel, sensitivity curves, overlap and interference
-   tests). Numbers in the spec get validated here before any radio is keyed.
-3. **v2 — protocol and CLI.** Text coder, framing, addressing, ACK and retry,
-   heard list, LBT, rigctld client, cpal audio in and out, `fika` CLI.
+2. **v1 — modem and simulator.** *In progress; the core works.* Workspace
+   crates `fika-modem` (GFSK synthesis, FFT energy matrix, Costas sync, soft
+   demodulation, LDPC), `fika-proto` (frames, callsigns, groups, text coder),
+   `fika-channel` (AWGN, Watterson with CCIR presets, clock error,
+   interferers) and `fika-cli` (`tx`, `rx`, `sim`, `multi`). Done: end-to-end
+   WAV round trip, sensitivity sweeps, multi-station scenarios. Open: per-block
+   tracking on long bursts, successive interference cancellation, a larger
+   text corpus for the prior, the spec appendices and test vectors.
+3. **v2 — protocol and CLI on air.** ACK and retry, heard list, LBT, rigctld
+   client, cpal audio in and out, simulated CAT for IC-705 and FT-891.
 4. **v3 — on air.** Cross-compile for aarch64, run on `shack` with the IC-705,
    first QSOs, tune thresholds against real paths.
 5. **Later.** Relay, beacon scheduling refinements, web UI for a phone over

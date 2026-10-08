@@ -1,0 +1,20 @@
+[package]
+name = "fika-cli"
+description = "fika command line: encode, decode and simulate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "fika"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+hound.workspace = true
+rand.workspace = true
+fika-modem.workspace = true
+fika-proto.workspace = true
+fika-channel.workspace = true

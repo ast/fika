@@ -1,6 +1,8 @@
 # fika protocol specification
 
 Version 0.1 (draft). Normative. The rationale is in [DESIGN.md](DESIGN.md).
+The reference implementation lives in `crates/` of this repository; where the
+two disagree, the implementation is the bug until this document is changed.
 
 The key words MUST, MUST NOT, SHOULD and MAY are to be read as in RFC 2119.
 
@@ -38,8 +40,10 @@ the order listed, MSB first, with no padding unless stated.
 | Raw bit rate | 125 bit/s | 25 bit/s |
 | Coded bit rate (after rate 1/2 LDPC) | 62.5 bit/s | 12.5 bit/s |
 | Net text rate, 4-block message | ≈ 46 bit/s ≈ 13 char/s | ≈ 9 bit/s ≈ 2.7 char/s |
-| Sensitivity, AWGN, 50 % decode, 2500 Hz reference | −12.5 dB | −19.5 dB |
-| Sensitivity, Watterson CCIR moderate (estimate) | ≈ −10 dB | ≈ −17 dB |
+| Sensitivity, AWGN, 50 % decode, theory | −12.5 dB | −19.5 dB |
+| Sensitivity, AWGN, 50 % decode, **measured** (`fika sim`, v0.1) | −11.5 dB | −18.7 dB |
+| Sensitivity, Watterson CCIR moderate, measured | ≈ −7 dB | not yet measured |
+| Sensitivity, Watterson CCIR good (slow selective fade), measured | ≈ −6 dB | not yet measured |
 | Maximum message | 8 blocks, 1701 payload bits, about 240 characters of ordinary text | same |
 | Airtime, 40-character message | 5.0 s | 25 s |
 | Airtime, 240-character message | 17.7 s | 88 s |
@@ -51,8 +55,11 @@ the order listed, MSB first, with no padding unless stated.
 | FEC | CCSDS TC (512,256) long, (256,128) short, soft BP | same |
 | Text coding | order-1 adaptive range coder, ≈ 2.5 bit/char | same |
 
-Sensitivity figures are derived in Section 8 and MUST be confirmed by
-simulation before being quoted as measured properties of the mode.
+Theory figures are derived in Section 8. Measured figures come from the
+simulator in `crates/fika-cli` (`fika sim`, 20 trials per point, 2-block
+message) and are about 1 dB behind theory on AWGN. Selective fading costs
+more: with two equal paths the lane sits in a notch for whole bursts, and
+retries, not the modem, are the remedy.
 
 ## 3. Lane and tone plan
 
@@ -119,25 +126,27 @@ both profiles on every lane.
 
 ## 5. Hop pattern
 
-### 5.1 Base sequence
+### 5.1 Sequences
 
-The base sequence `C` is the Welch Costas array of order 16 from the prime 17
-and primitive root 3:
+Three Welch Costas arrays of order 16 from the prime 17, with different
+primitive roots `g`:
 
-    C[i] = (3^i mod 17) − 1,   i = 0..15
+    W_g[i] = (g^i mod 17) − 1,   i = 0..15
 
-    C = [0, 2, 8, 9, 12, 4, 14, 10, 15, 13, 7, 6, 3, 11, 1, 5]
+    C = W_3 = [0, 2, 8, 9, 12, 4, 14, 10, 15, 13, 7, 6, 3, 11, 1, 5]   (long SYNC, data hop)
+    S = W_6 = [0, 5, 1, 11, 3, 6, 7, 13, 15, 10, 14, 4, 12, 9, 8, 2]   (short SYNC)
+    P = W_7 = [0, 6, 14, 2, 3, 10, 8, 11, 15, 9, 1, 13, 12, 5, 7, 4]   (PHASE, pilots)
 
-`C` is a permutation of 0..15 with the Costas property: its two-dimensional
+Each is a permutation of 0..15 with the Costas property: its two-dimensional
 aperiodic autocorrelation is at most 1 for every non-zero shift in time and
 frequency. Because the Welch construction is singly periodic, every cyclic
-time shift `C_φ[n] = C[(n + φ) mod 16]` is also a Costas array, and two
-distinct shifts agree in at most one position.
+time shift of one of them is also a Costas array, and two distinct shifts of
+the same array agree in at most one position.
 
-The flipped sequence `C' = 15 − C` is also Costas and is used to mark short
-frames:
-
-    C' = [15, 13, 7, 6, 3, 11, 1, 5, 0, 2, 8, 9, 12, 4, 14, 10]
+The three arrays are chosen so that any cyclic shift of one has at most 4
+coincidences with another under any time and frequency shift (C–S: 2, C–P:
+3, S–P: 4). Note that `15 − C` is **not** a usable second sequence: for a
+Welch array it equals `C` cyclically shifted by 8, so it half-matches `C`.
 
 ### 5.2 Pattern phase
 
@@ -147,14 +156,19 @@ Every burst has a pattern phase `φ` in 0..15.
   random per burst.
 - For ACK bursts `φ = msg_id mod 16` of the message being acknowledged.
 
-### 5.3 Data symbol mapping
+### 5.3 Data and pilot symbol mapping
 
 Number the symbols after the preamble `m = 0, 1, 2, ...`, counting pilot
-symbols. The transmitted tone for symbol `m` with data value `d_m` is
+symbols. The transmitted tone for a data symbol `m` with value `d_m` is
 
     t_m = ( d_m + C[(m + φ) mod 16] ) mod 16
 
-The receiver inverts this after estimating `φ` from the preamble.
+The four pilot symbols at the start of each block carry no data and use the
+pilot sequence directly:
+
+    t_m = P[(m + φ) mod 16]
+
+The receiver inverts the data mapping after estimating `φ` from the preamble.
 
 ### 5.4 What the pattern guarantees
 
@@ -178,8 +192,8 @@ Every burst begins with 24 symbols in the burst's profile:
 
 | Part | Symbols | Tone of symbol n |
 |---|---|---|
-| SYNC | 16 (n = 0..15) | `C[n]` for a long frame, `C'[n]` for a short frame |
-| PHASE | 8 (n = 0..7) | `C[(n + φ) mod 16]` |
+| SYNC | 16 (n = 0..15) | `C[n]` for a long frame, `S[n]` for a short frame |
+| PHASE | 8 (n = 0..7) | `P[(n + φ) mod 16]` |
 
 SYNC is independent of `φ`, so timing and frequency are found first; PHASE
 then identifies `φ`. Any two values of `φ` differ in at least 7 of the 8 PHASE
@@ -187,12 +201,12 @@ positions.
 
 Preamble airtime: 0.768 s in F, 3.84 s in S.
 
-### 6.2 Detection
+### 6.2 Coarse detection
 
 The receiver maintains for each profile a normalised energy matrix `Ẽ[frame,
-bin]` (Section 10). For each lane, each profile, each sequence in {C, C'},
-each candidate frequency offset `ν` within ±2 bins and each candidate start
-time `τ`, it computes
+bin]` (Section 10), clipped at 20 for this step. For each lane, each profile,
+each sequence in {C, S}, each candidate frequency offset `ν` within ±2 bins
+and each candidate start time `τ`, it computes
 
     Z(τ, ν, seq) = Σ_{n=0..15} Ẽ[τ + n·T_s, ν + seq[n]]
 
@@ -207,25 +221,45 @@ decode. At the decode threshold (Es/N0 ≈ 6.5 dB) the mean of `Z` is about 88
 with standard deviation 13, so the miss probability is negligible. Preamble
 detection is not the sensitivity limit.
 
-### 6.3 Refinement
+### 6.3 Fine pass and refinement
 
-After a detection the receiver SHOULD refine `τ` and `ν` by parabolic
-interpolation of `Z` around the peak, to about T_s/16 in time and 1/16 bin
-(≈ 2 Hz) in frequency for F, 0.6 Hz for S. It then evaluates the PHASE sum for
-all 16 values of `φ` at the refined `(τ, ν)` and accepts the maximum if it is
-at least twice the second best; otherwise the detection is dropped.
+The clipped sums saturate for any sequence when a signal is strong or the
+input is noiseless, so every coarse candidate MUST be re-examined on the
+unclipped energies:
+
+1. Re-find the peak `Z_u(τ, ν)` of the unclipped SYNC sum within ±1 symbol
+   of the coarse time and over the whole ±2 bin frequency range.
+2. **Peak test:** `Z_u` at the peak MUST be at least 2.0 times the larger of
+   `Z_u` one symbol earlier and one symbol later (and at least 2.0 × 16).
+3. **Support test:** at least 9 of the 16 SYNC bins MUST be at or above a
+   quarter of their mean. A chance match of data symbols lights a handful of
+   bins however strong the signal; a preamble lights nearly all of them.
+4. Interpolate `τ` and `ν` parabolically around the peak.
+5. Suppress candidates within 16 symbols of a stronger (by `Z_u`) accepted
+   candidate in the same lane.
+6. **PHASE:** evaluate the PHASE sum for all 16 `φ` at the refined `(τ, ν)`
+   on unclipped energies clipped at twice the mean SYNC peak, and accept the
+   maximum if it is at least 1.5 times the second best.
+7. **Timing:** refine `τ` in the sample domain by scanning ±1/8 symbol in
+   steps of 1/64 symbol for the maximum summed energy of the 16 SYNC tones
+   (Goertzel at the exact offset). The frame grid alone is good to a few
+   percent of a symbol, which costs about a decibel.
+
+The SNR estimate is `Es/N0 = 1.38 · (Z_u / 16 − 1)`; the factor is an
+empirical calibration for grid misalignment and the Gaussian transitions,
+and brings the reported value within 0.3 dB of the set value on AWGN.
 
 ### 6.4 Profile and frame type
 
 Profile is distinguished by symbol rate alone: the F detector sees an S
 preamble as runs of five identical tones and scores at most 2–3 Costas hits;
 the S detector sees an F preamble spread over five tones per frame. Frame
-type (long or short) is given by which sequence, `C` or `C'`, matched.
+type (long or short) is given by which sequence, `C` or `S`, matched.
 
 ### 6.5 Tracking
 
-Each block begins with 4 pilot symbols with `d = 0`, so their tones are the
-hop offsets and are known once `φ` is known. After each successfully decoded
+Each block begins with 4 pilot symbols whose tones `P[(m + φ) mod 16]` are
+known once `φ` is known. After each successfully decoded
 block the receiver SHOULD re-encode the block, giving all 132 tones, and
 re-estimate `τ` and `ν` by maximising energy over them, bounded to ±T_s/4 and
 ±1/4 bin per block. This tracking is REQUIRED for bursts longer than one
@@ -367,10 +401,10 @@ is used in both profiles.
 
 ### 9.1 Callsigns
 
-Standard callsigns are packed into 28 bits exactly as in the FT8 protocol
+Standard callsigns are packed into 28 bits using the FT8 six-character index
 (Franke, Somerville and Taylor, "The FT4 and FT8 Communication Protocols",
-QEX July/August 2020, Section on standard callsign packing), giving values
-below 262 177 560. Values from 262 177 560 upward are reserved: a callsign
+QEX July/August 2020) **without** FT8's token and hash offsets, giving values
+below 262 177 560 = 37·36·10·27³. Values from 262 177 560 upward are reserved: a callsign
 that cannot be packed MUST be sent as 262 177 560 plus the low 22 bits of
 the FNV-1a 32-bit hash of its uppercase ASCII text. Receivers display such a
 sender as the hash in angle brackets until the full callsign is learned from
@@ -440,8 +474,11 @@ table. The published table will be versioned by `ver`.
    per tone), hop 480 (40 ms). 25 FFTs per second.
 4. Keep bins covering 300–2700 Hz. Ring buffers of 30 s (F) and 150 s (S),
    about 8 MB of f32 in total.
-5. Per-bin baseline: running 30th percentile over 8 s (F) / 40 s (S), updated
-   every 0.5 s. `Ẽ = E / baseline`, clipped at 20.
+5. Per-bin baseline: 30th percentile over blocks of 8 s (F) / 40 s (S),
+   scaled by 1/−ln(0.7) so noise has unit mean, floored at a thousandth of
+   that bin's own maximum in the block and of the global mean (so clean,
+   noiseless input stays finite and spectral leakage stays below the clip).
+   `Ẽ = E / baseline`; the coarse detector clips at 20, the fine pass does not.
 6. Preamble search as in Section 6 on every new column.
 7. On detection: re-extract the burst's 12 kHz samples, mix by `−ν̂`, compute
    the 16 tone energies per symbol with Goertzel filters at `τ̂`, demodulate
@@ -551,7 +588,7 @@ format need not change:
 
 ## 17. Appendices (to be added)
 
-- A. Costas sequences `C`, `C'`, PHASE templates and a worked correlation
+- A. Costas sequences `C`, `S`, `P`, PHASE templates and a worked correlation
   example.
 - B. Text alphabet table and static prior frequencies.
 - C. Test vectors: packed callsigns, group hashes, CRC, a complete encoded

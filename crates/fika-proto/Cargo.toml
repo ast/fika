@@ -1,0 +1,12 @@
+[package]
+name = "fika-proto"
+description = "fika link layer: frames, callsigns, groups, text coding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+fika-modem.workspace = true
+unicode-normalization.workspace = true
