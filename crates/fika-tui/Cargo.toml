@@ -1,0 +1,19 @@
+[package]
+name = "fika-tui"
+description = "fika terminal user interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "fika-tui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+ratatui.workspace = true
+fika-modem.workspace = true
+fika-proto.workspace = true
+fika-station.workspace = true

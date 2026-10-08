@@ -1,0 +1,21 @@
+[package]
+name = "fika-station"
+description = "fika station runtime: audio, rig control, streaming receiver, transmit queue"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+toml.workspace = true
+cpal.workspace = true
+ringbuf.workspace = true
+rand.workspace = true
+fika-modem.workspace = true
+fika-proto.workspace = true
+
+[dev-dependencies]
+toml.workspace = true

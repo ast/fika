@@ -1,0 +1,29 @@
+fika: rustc 1.95.0  |  rigctl(d), Hamlib 3.3
+# fika station configuration
+
+[station]
+call = "SM6WJM"
+grid = "JO57"
+groups = ["fika"]          # first entry is the default destination
+
+[audio]
+# "default", "none", or a substring of the device name (see fika-tui --list-audio).
+# IC-705 / FT-891 over USB show up as "USB Audio CODEC".
+input = "default"
+output = "default"
+sample_rate = 48000
+# Without a radio: play bursts on the speakers and decode them yourself.
+loopback = true
+tx_level = 0.5
+
+[rig]
+kind = "none"              # "none" (VOX / no radio) or "rigctld"
+host = "127.0.0.1:4532"    # e.g. rigctld -m 3085 -r /dev/ic-705a -s 115200
+tx_delay_ms = 150
+tx_tail_ms = 100
+set_data_mode = false
+
+[modem]
+lane = 1                   # 0..3
+profile = "fast"           # fast or slow
+threshold = 40.0

@@ -5,6 +5,8 @@ members = [
   "crates/fika-proto",
   "crates/fika-channel",
   "crates/fika-cli",
+  "crates/fika-station",
+  "crates/fika-tui",
 ]
 
 [workspace.package]
@@ -24,6 +26,12 @@ rand = "0.9"
 rand_distr = "0.5"
 hound = "3"
 unicode-normalization = "0.1"
+cpal = "0.15"
+ringbuf = "0.4"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+ratatui = "0.29"
+fika-station = { path = "crates/fika-station" }
 fika-modem = { path = "crates/fika-modem" }
 fika-proto = { path = "crates/fika-proto" }
 fika-channel = { path = "crates/fika-channel" }

@@ -40,8 +40,36 @@ cargo run --release -p fika-cli -- multi --stations 4 --snr=-6
 cargo run --release -p fika-cli -- multi --stations 2 --lane 1 --snr=-4 --spread-db 10 -v
 ```
 
+## On the air, or just on the speakers
+
+`fika-tui` is the station: a chat window, a heard list, a waterfall of the
+passband and an input line. It is configured with a TOML file:
+
+```sh
+fika-tui --example-config > fika.toml     # edit call, grid, audio, rig
+fika-tui --list-audio                      # device names to use in [audio]
+fika-tui -c fika.toml
+```
+
+- **With a radio.** Set `[audio]` input and output to the rig's sound card
+  (the IC-705 and FT-891 appear as "USB Audio CODEC") and `[rig] kind =
+  "rigctld"` with the address of a running `rigctld`. PTT, dial frequency
+  and optionally data mode go through hamlib.
+- **Without a radio.** Set `input = "none"`, `output = "default"` and
+  `loopback = true`. Bursts play on the speakers, and the same samples are
+  fed into the receiver at playback pace, so you hear the modem and watch
+  your own message decode. With a microphone as input you can also decode
+  another computer across the room acoustically. `just tui-loopback` does
+  this.
+
+In the TUI, type and press Enter to send. `/to @group`, `/to CALL` or
+`/to all` changes the destination, `/lane 0..3` and `/profile fast|slow`
+the waveform, `/beacon` sends a beacon, F1 shows help. Direct messages
+request an acknowledgement and show a delivery status.
+
 Crates: `fika-modem` (physical layer), `fika-proto` (frames, callsigns,
 groups, text coding), `fika-channel` (AWGN, Watterson, clock error,
-interferers), `fika-cli` (the `fika` binary).
+interferers), `fika-cli` (the `fika` binary), `fika-station` (audio, rig,
+streaming receiver, transmit queue), `fika-tui` (the terminal UI).
 
 Copyright 2026 Albin Stigö SM6WJM.

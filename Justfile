@@ -36,3 +36,12 @@ multi: build
 loop text="Hej från fika, 73 de SM6WJM":
     cargo run -q -p fika-cli -- tx --from SM6WJM --to @fika --text "{{text}}" -o /tmp/fika-loop.wav
     cargo run -q -p fika-cli -- rx /tmp/fika-loop.wav
+
+# Run the TUI with a config file (default fika.toml; see fika.example.toml).
+tui config="fika.toml":
+    cargo run --release -p fika-tui -- -c {{config}}
+
+# TUI without a radio: no input, speakers out, software loopback.
+tui-loopback:
+    printf '[station]\ncall = "SM6WJM"\ngrid = "JO57"\n[audio]\ninput = "none"\noutput = "default"\nloopback = true\n' > /tmp/fika-loopback.toml
+    cargo run --release -p fika-tui -- -c /tmp/fika-loopback.toml
