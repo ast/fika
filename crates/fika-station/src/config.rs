@@ -12,6 +12,34 @@ pub struct Config {
     pub audio: AudioCfg,
     pub rig: RigCfg,
     pub modem: ModemCfg,
+    pub live: LiveCfg,
+}
+
+/// Simulated shared channel: with the PipeWire backend, every station plays
+/// into and captures from one virtual sink (the "ether"); each station adds
+/// its own band noise and passes its bursts through a channel model.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LiveCfg {
+    pub enabled: bool,
+    /// SNR (2500 Hz reference) at which a full-level peer burst arrives here.
+    pub snr_db: f64,
+    /// Channel applied to our bursts before they reach the others:
+    /// awgn, good, moderate, poor, flat, or an ITU-R F.1487 name.
+    pub channel: String,
+    /// Our transmitter's frequency error as the others hear it, Hz.
+    pub offset_hz: f64,
+}
+
+impl Default for LiveCfg {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            snr_db: -8.0,
+            channel: "awgn".into(),
+            offset_hz: 0.0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -38,7 +66,10 @@ impl Default for StationCfg {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AudioCfg {
+    /// "alsa" (cpal, device names) or "pipewire" (native, node names).
+    pub backend: String,
     /// Input device: "default", "none", or a case-insensitive substring of the device name.
+    /// With the pipewire backend: a node name (a sink name captures its monitor).
     pub input: String,
     /// Output device: "default", "none", or a substring.
     pub output: String,
@@ -54,6 +85,7 @@ pub struct AudioCfg {
 impl Default for AudioCfg {
     fn default() -> Self {
         Self {
+            backend: "alsa".into(),
             input: "default".into(),
             output: "default".into(),
             sample_rate: 48_000,
@@ -151,6 +183,21 @@ impl Config {
             (0.0..=1.0).contains(&self.audio.tx_level),
             "audio.tx_level must be 0..1"
         );
+        anyhow::ensure!(
+            matches!(self.audio.backend.as_str(), "alsa" | "pipewire"),
+            "audio.backend must be \"alsa\" or \"pipewire\""
+        );
+        if self.live.enabled {
+            anyhow::ensure!(
+                self.audio.backend == "pipewire",
+                "live mode needs audio.backend = \"pipewire\" (all stations share one virtual sink)"
+            );
+            anyhow::ensure!(
+                fika_channel::ChannelSpec::from_name(&self.live.channel).is_some(),
+                "unknown live.channel '{}'",
+                self.live.channel
+            );
+        }
         Ok(())
     }
 
@@ -164,8 +211,11 @@ grid = "JO57"
 groups = ["fika"]          # first entry is the default destination
 
 [audio]
-# "default", "none", or a substring of the device name (see fika-tui --list-audio).
-# IC-705 / FT-891 over USB show up as "USB Audio CODEC".
+# backend "alsa": input/output are "default", "none", or a substring of the
+# device name (see fika-tui --list-audio); the IC-705 / FT-891 USB codec
+# shows up as "USB Audio CODEC". backend "pipewire": PipeWire node names;
+# naming a sink as input captures its monitor.
+backend = "alsa"
 input = "default"
 output = "default"
 sample_rate = 48000
@@ -186,6 +236,13 @@ profile = "fast"           # fast or slow
 threshold = 40.0
 listen_before_talk = false # hold transmissions while the lane is busy
 request_ack = false        # ask for an ACK on direct messages
+
+# Several stations on this host over a simulated channel (see `just tui-live`).
+[live]
+enabled = false
+snr_db = -8.0              # how loud the others arrive here
+channel = "awgn"           # applied to our bursts on the way out
+offset_hz = 0.0            # our transmitter's frequency error
 "#
     }
 }

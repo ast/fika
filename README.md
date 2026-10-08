@@ -131,6 +131,16 @@ fika-tui -c fika.toml
   fed into the receiver at playback pace, so you hear the modem and watch
   your own message decode. `just tui-loopback` does this.
 
+- **Several stations on one host.** `just tui-live SM6WJM` in one terminal
+  and `just tui-live AD8KM` in another. Every station plays into and
+  listens to one PipeWire virtual sink, `fika-ether`, adds its own band
+  noise at the configured SNR, and passes its bursts through a channel
+  model on the way out (`just tui-live OH2ABC 2 -12 poor` for lane 2 at
+  −12 dB over a CCIR poor channel). Half duplex applies: a station does not
+  hear the ether while it is keyed. `just live-down` removes the sink.
+  This uses the native PipeWire backend (`[audio] backend = "pipewire"`),
+  which addresses nodes by name; `--no-default-features` builds without it.
+
 In the TUI, type and press Enter to send. `/to @group`, `/to CALL` or
 `/to all` changes the destination, `/lane 0..3` and `/profile fast|slow`
 the waveform, `/beacon` sends a beacon, F1 shows help. Direct messages

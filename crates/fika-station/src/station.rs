@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use rand::Rng;
+use rand::{Rng, SeedableRng};
 
 use fika_modem::resample::StreamDecimator;
 use fika_modem::{Burst, FrameKind, Profile, SyncConfig, Transmitter};
@@ -99,8 +99,9 @@ impl Station {
         let (rx_cmd_tx, rx_cmd_rx) = mpsc::channel::<RxCommand>();
         let (tx_jobs, tx_jobs_rx) = mpsc::channel::<TxJob>();
 
-        let (audio, output) =
-            AudioEngine::open(&cfg.audio, input_tx.clone()).context("open audio devices")?;
+        let node_name = format!("fika-{}", cfg.station.call.to_lowercase());
+        let (audio, output) = AudioEngine::open_named(&cfg.audio, input_tx.clone(), &node_name)
+            .context("open audio devices")?;
         let audio_names = (audio.input_name.clone(), audio.output_name.clone());
         let has_input = !cfg.audio.input.eq_ignore_ascii_case("none");
         let shared = Arc::new(Shared::default());
@@ -116,11 +117,22 @@ impl Station {
             };
             let shared = shared.clone();
             let loopback = cfg.audio.loopback;
+            // Live channel: the ether carries peers' bursts at their own
+            // level; we add the band noise that sets the configured SNR for
+            // a full-level burst.
+            let live_noise = cfg.live.enabled.then(|| {
+                fika_channel::noise_sigma(
+                    cfg.live.snr_db,
+                    fika_channel::awgn::tone_power(cfg.audio.tx_level as f64),
+                    fika_modem::params::RX_SAMPLE_RATE as f64,
+                ) as f32
+            });
             thread::Builder::new()
                 .name("fika-rx".into())
                 .spawn(move || {
                     rx_thread(
-                        rate, has_input, sync, my_call, loopback, shared, input_rx, rx_cmd_rx, ev,
+                        rate, has_input, sync, my_call, loopback, live_noise, shared, input_rx,
+                        rx_cmd_rx, ev,
                     )
                 })?;
         }
@@ -133,11 +145,15 @@ impl Station {
             let level = cfg.audio.tx_level;
             let shared = shared.clone();
             let rx_cmd_tx = rx_cmd_tx.clone();
+            let live = cfg.live.enabled.then(|| LiveTx {
+                spec: fika_channel::ChannelSpec::from_name(&cfg.live.channel).expect("validated"),
+                offset_hz: cfg.live.offset_hz,
+            });
             thread::Builder::new()
                 .name("fika-tx".into())
                 .spawn(move || {
                     tx_thread(
-                        rig_cfg, output, loopback, level, shared, tx_jobs_rx, rx_cmd_tx, ev,
+                        rig_cfg, output, loopback, level, live, shared, tx_jobs_rx, rx_cmd_tx, ev,
                     )
                 })?;
         }
@@ -190,6 +206,12 @@ impl Station {
                 ""
             }
         ));
+        if st.cfg.live.enabled {
+            st.push_log(format!(
+                "live channel: {} at {} dB, offset {:+} Hz",
+                st.cfg.live.channel, st.cfg.live.snr_db, st.cfg.live.offset_hz
+            ));
+        }
         if st.cfg.audio.loopback && st.cfg.rig.kind != RigKind::None {
             st.push_log("WARNING: loopback is on together with rig control; every message will decode twice".into());
         }
@@ -592,6 +614,7 @@ fn rx_thread(
     sync: SyncConfig,
     my_call: u32,
     loopback: bool,
+    live_noise: Option<f32>,
     shared: Arc<Shared>,
     input: Receiver<Vec<f32>>,
     cmds: Receiver<RxCommand>,
@@ -605,6 +628,8 @@ fn rx_thread(
     let started = Instant::now();
     let mut synthetic_sent = 0u64;
     let mut blank_start: Option<f64> = None;
+    let mut noise_rng = rand::rngs::StdRng::seed_from_u64(epoch_secs() as u64);
+    let noise_dist = live_noise.map(|s| rand_distr::Normal::new(0.0f32, s).unwrap());
     loop {
         while let Ok(cmd) = cmds.try_recv() {
             match cmd {
@@ -626,6 +651,12 @@ fn rx_thread(
             if due > synthetic_sent {
                 out12.resize((due - synthetic_sent) as usize, 0.0);
                 synthetic_sent = due;
+            }
+        }
+        if let Some(dist) = &noise_dist {
+            use rand_distr::Distribution;
+            for v in out12.iter_mut() {
+                *v += dist.sample(&mut noise_rng);
             }
         }
         if !out12.is_empty() {
@@ -744,12 +775,19 @@ fn listen_before_talk(
     }
 }
 
+/// Live channel applied to our own bursts on the way out.
+struct LiveTx {
+    spec: fika_channel::ChannelSpec,
+    offset_hz: f64,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn tx_thread(
     rig_cfg: crate::config::RigCfg,
     mut output: OutputHandle,
     loopback: bool,
     level: f32,
+    live: Option<LiveTx>,
     shared: Arc<Shared>,
     jobs: Receiver<TxJob>,
     rx_cmds: Sender<RxCommand>,
@@ -770,6 +808,7 @@ fn tx_thread(
     tx_12k.amplitude = level;
     let mut last_poll = Instant::now() - Duration::from_secs(10);
     let mut hold_until = Instant::now();
+    let mut live_rng = rand::rngs::StdRng::seed_from_u64(epoch_secs() as u64 ^ 0x5eed);
     loop {
         if last_poll.elapsed() > Duration::from_secs(2) {
             last_poll = Instant::now();
@@ -811,12 +850,23 @@ fn tx_thread(
             continue;
         }
         let airtime = job.burst.airtime_s(job.profile);
-        let audio = match tx_dev.render(&job.burst, job.lane, job.profile, 0.0) {
+        let offset = live.as_ref().map_or(0.0, |l| l.offset_hz);
+        let audio = match tx_dev.render(&job.burst, job.lane, job.profile, offset) {
             Ok(a) => a,
             Err(e) => {
                 let _ = ev.send(StationEvent::Log(format!("tx render failed: {e}")));
                 continue;
             }
+        };
+        let audio = match &live {
+            Some(l) => fika_channel::apply_with_reference(
+                &l.spec,
+                &audio,
+                output.rate as f64,
+                level as f64,
+                &mut live_rng,
+            ),
+            None => audio,
         };
         if let Err(e) = rig.ptt(true) {
             let _ = ev.send(StationEvent::Log(format!("PTT on failed: {e}")));

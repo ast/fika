@@ -6,7 +6,14 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+default = ["pipewire"]
+# Native PipeWire backend: address nodes by name, needed for `[live]`.
+# Build with --no-default-features for ALSA-only (e.g. cross builds).
+pipewire = ["dep:pipewire"]
+
 [dependencies]
+pipewire = { workspace = true, optional = true }
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
@@ -16,6 +23,8 @@ ringbuf.workspace = true
 rand.workspace = true
 fika-modem.workspace = true
 fika-proto.workspace = true
+fika-channel.workspace = true
+rand_distr.workspace = true
 
 [dev-dependencies]
 toml.workspace = true

@@ -15,4 +15,4 @@ pub use awgn::{add_awgn, noise_sigma};
 pub use clock::resample_ppm;
 pub use interference::add_carrier;
 pub use spec::{ChannelSpec, Impulsive, Interferer, Path};
-pub use watterson::apply;
+pub use watterson::{apply, apply_with_reference};

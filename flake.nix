@@ -18,6 +18,11 @@
       devShells = forAllSystems (
         system: pkgs: {
           default = pkgs.mkShell {
+            # libpipewire for the native PipeWire audio backend (pkg-config
+            # finds it through buildInputs), plus libclang for its bindgen.
+            buildInputs = [ pkgs.pipewire ];
+            LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+            BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include -isystem ${pkgs.glibc.dev}/include";
             packages = [
               # Rust toolchain
               pkgs.cargo
@@ -39,6 +44,9 @@
 
               # lossless PNG optimiser for README screenshots
               pkgs.oxipng
+
+              # pw-cli / pw-record for the live channel and debugging audio
+              pkgs.pipewire
             ];
 
             shellHook = ''

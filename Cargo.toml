@@ -31,6 +31,7 @@ ringbuf = "0.4"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 ratatui = "0.29"
+pipewire = "0.8"
 fika-station = { path = "crates/fika-station" }
 fika-modem = { path = "crates/fika-modem" }
 fika-proto = { path = "crates/fika-proto" }

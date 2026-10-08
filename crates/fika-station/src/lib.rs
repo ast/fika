@@ -2,6 +2,8 @@
 //! a streaming receiver, a transmit queue, and the glue between them.
 
 pub mod audio;
+#[cfg(feature = "pipewire")]
+pub mod audio_pw;
 pub mod config;
 pub mod event;
 pub mod heard;

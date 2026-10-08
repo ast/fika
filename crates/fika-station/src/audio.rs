@@ -19,6 +19,8 @@ pub type OutProducer = ringbuf::HeapProd<f32>;
 pub struct AudioEngine {
     _input: Option<cpal::Stream>,
     _output: Option<cpal::Stream>,
+    #[cfg(feature = "pipewire")]
+    _pw: Option<crate::audio_pw::PwEngine>,
     pub rate: u32,
     pub input_name: String,
     pub output_name: String,
@@ -183,10 +185,61 @@ impl AudioEngine {
     /// on `input_tx`. Returns the engine and the output handle for the
     /// transmit thread.
     pub fn open(cfg: &AudioCfg, input_tx: Sender<Vec<f32>>) -> Result<(Self, OutputHandle)> {
-        let host = cpal::default_host();
+        Self::open_named(cfg, input_tx, "fika")
+    }
+
+    /// As `open`, with the PipeWire node name prefix for this station.
+    pub fn open_named(
+        cfg: &AudioCfg,
+        input_tx: Sender<Vec<f32>>,
+        node_name: &str,
+    ) -> Result<(Self, OutputHandle)> {
         let rate = cfg.sample_rate;
         let played = Arc::new(AtomicU64::new(0));
         let mute = Arc::new(AtomicBool::new(false));
+
+        if cfg.backend == "pipewire" {
+            #[cfg(feature = "pipewire")]
+            {
+                let (producer, consumer) = if cfg.output.eq_ignore_ascii_case("none") {
+                    (None, None)
+                } else {
+                    let (p, c) = HeapRb::<f32>::new(rate as usize * 4).split();
+                    (Some(p), Some(c))
+                };
+                let pw = crate::audio_pw::PwEngine::open(
+                    rate,
+                    &cfg.input,
+                    &cfg.output,
+                    node_name,
+                    input_tx,
+                    consumer,
+                    played.clone(),
+                    mute.clone(),
+                )?;
+                return Ok((
+                    Self {
+                        _input: None,
+                        _output: None,
+                        _pw: Some(pw),
+                        rate,
+                        input_name: format!("pipewire:{}", cfg.input),
+                        output_name: format!("pipewire:{}", cfg.output),
+                        played: played.clone(),
+                    },
+                    OutputHandle {
+                        producer,
+                        played,
+                        rate,
+                        mute,
+                    },
+                ));
+            }
+            #[cfg(not(feature = "pipewire"))]
+            bail!("built without the pipewire feature; use audio.backend = \"alsa\"");
+        }
+        let _ = node_name;
+        let host = cpal::default_host();
 
         let mut input_name = "none".to_string();
         let input = match find_device(&host, &cfg.input, true)? {
@@ -246,6 +299,8 @@ impl AudioEngine {
             Self {
                 _input: input,
                 _output: output,
+                #[cfg(feature = "pipewire")]
+                _pw: None,
                 rate,
                 input_name,
                 output_name,

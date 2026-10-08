@@ -98,7 +98,8 @@ and neither blocks the modem. v1 is one CLI binary and rigctld.
 3. **v2 — station and TUI.** *Mostly done.* `fika-station` (config, cpal
    audio, rigctld, streaming receiver, transmit queue, heard list, automatic
    ACK, beacons, listen-before-talk, receiver blanking while keyed, ACK
-   window hold, software loopback) and `fika-tui`. Open: sender-side retries
+   window hold, software loopback, native PipeWire backend with a live
+   multi-station channel over a virtual sink) and `fika-tui`. Open: sender-side retries
    when no ACK arrives, automatic beacons, simulated CAT for the IC-705 and
    FT-891.
 4. **v3 — on air.** Cross-compile for aarch64, run on `shack` with the IC-705,

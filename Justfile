@@ -50,3 +50,18 @@ tui-loopback:
 channels:
     cargo test --release -p fika-cli --test channels -- --ignored --nocapture
 
+
+# Live channel on this host: every station plays into and listens to one
+# PipeWire virtual sink ("fika-ether"), adds its own band noise at snr dB and
+# passes its bursts through the channel model. Open one per terminal:
+#   just tui-live SM6WJM
+#   just tui-live AD8KM 2 -12 poor
+tui-live call="SM6WJM" lane="1" snr="-8" channel="awgn":
+    pw-cli ls Node | grep -q 'node.name = "fika-ether"' || \
+      pw-cli create-node adapter '{ factory.name=support.null-audio-sink node.name=fika-ether node.description="fika ether" media.class=Audio/Sink object.linger=true audio.position=[MONO] }' >/dev/null
+    printf '[station]\ncall = "{{call}}"\ngrid = "JO57"\n[audio]\nbackend = "pipewire"\ninput = "fika-ether"\noutput = "fika-ether"\nsample_rate = 12000\nloopback = false\n[modem]\nlane = {{lane}}\n[live]\nenabled = true\nsnr_db = {{snr}}\nchannel = "{{channel}}"\n' > /tmp/fika-live-{{call}}.toml
+    cargo run --release -p fika-tui -- -c /tmp/fika-live-{{call}}.toml
+
+# Remove the virtual sink again.
+live-down:
+    pw-cli ls Node | grep -B4 'node.name = "fika-ether"' | grep -oE 'id [0-9]+' | awk '{print $2}' | xargs -r -n1 pw-cli destroy
