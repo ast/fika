@@ -88,9 +88,11 @@ and neither blocks the modem. v1 is one CLI binary and rigctld.
 2. **v1 — modem and simulator.** *In progress; the core works.* Workspace
    crates `fika-modem` (GFSK synthesis, FFT energy matrix, Costas sync, soft
    demodulation, LDPC), `fika-proto` (frames, callsigns, groups, text coder),
-   `fika-channel` (AWGN, Watterson with CCIR presets, clock error,
-   interferers) and `fika-cli` (`tx`, `rx`, `sim`, `multi`). Done: end-to-end
-   WAV round trip, sensitivity sweeps, multi-station scenarios. Open: per-block
+   `fika-channel` (AWGN, Watterson with CCIR and ITU-R F.1487 presets, clock
+   error, drift, carriers, CW, RTTY and PSK31 interferers, impulsive noise,
+   SSB passband) and `fika-cli` (`tx`, `rx`, `sim`, `multi`). Done:
+   end-to-end WAV round trip, sensitivity sweeps, multi-station scenarios,
+   a channel regression suite (`just channels`). Open: per-block
    tracking on long bursts, successive interference cancellation, a larger
    text corpus for the prior, the spec appendices and test vectors.
 3. **v2 — station and TUI.** *Mostly done.* `fika-station` (config, cpal

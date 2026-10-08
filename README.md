@@ -89,7 +89,27 @@ cargo run --release -p fika-cli -- sim --profile fast --channel moderate --sweep
 # Four stations at once on four lanes, then two in one lane 10 dB apart.
 cargo run --release -p fika-cli -- multi --stations 4 --snr=-6
 cargo run --release -p fika-cli -- multi --stations 2 --lane 1 --snr=-4 --spread-db 10 -v
+
+# Impairments: ITU-R F.1487 presets (low/mid/high-latitude quiet, moderate,
+# disturbed, mid-nvis), interferers inside the lane, lightning static,
+# frequency drift and the rig's SSB passband.
+cargo run --release -p fika-cli -- sim --channel high-moderate --sweep=-8:0:2
+cargo run --release -p fika-cli -- sim --snr=-6 --interferer cw:1100:6 --interferer rtty:1300:-3
+cargo run --release -p fika-cli -- sim --snr=-8 --impulsive 5:2:20 --drift 1 --bandpass
+
+# Regression suite: decode rate per scenario must stay above a floor.
+just channels
 ```
+
+The channel models live in `crates/fika-channel`: AWGN calibrated to the
+2500 Hz reference, Watterson two-path fading with Gaussian Doppler spectra
+(CCIR 520 and all ten ITU-R F.1487 presets), flat Rayleigh, frequency
+offset and drift, sample-clock error, steady carriers, keyed CW, RTTY and
+PSK31-like interferers, impulsive noise and a 300–2700 Hz passband.
+`tools/gr_channel.py` passes a WAV through GNU Radio's gr-channels blocks
+as an independent cross-check; it needs GNU Radio installed, for example
+`nix shell nixpkgs#gnuradio`, and models mobile-style Jakes fading rather
+than the HF Watterson model, so expect agreement in trend only.
 
 ## On the air, or just on the speakers
 

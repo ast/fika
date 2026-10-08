@@ -347,6 +347,16 @@ does not block the modem.
   and the frame-grid frequency estimate. Under CCIR moderate fading the fast
   profile needs about −7 dB and under slow selective fading about −6 dB,
   because a 500 Hz lane can sit in a two-path notch for a whole burst.
+- **Strong off-grid carriers.** The demodulator normalises each tone bin by
+  the 75th percentile of its own energy over the block, which the hop makes
+  a clean estimate of that bin's noise plus any interferer on it. A carrier
+  on a tone frequency is therefore harmless to at least +15 dB, and keyed CW
+  at +6 dB decodes fully. A carrier halfway between two tones leaks into both
+  through the rectangular symbol window at nearly full level, and the
+  phase-dependent cross-term with our own tone makes those two tones
+  unreliable; +6 dB still decodes, +10 dB does not. The cure is to estimate
+  the steady carrier over the block (long FFT, then a least-squares fit of
+  amplitude and phase) and subtract it before forming tone energies.
 - **False detections.** Chance matches of data symbols in a strong burst's
   own lane still pass the detector at roughly one per burst. Each costs one
   failed LDPC decode and never outranks a real preamble, but a cleaner

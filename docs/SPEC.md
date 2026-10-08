@@ -376,9 +376,14 @@ The 512 (or 256) coded bits are interleaved (8.3) and then grouped into
 ### 8.2 Soft demodulation
 
 For each data symbol the receiver computes the energy `e_t` in each of the 16
-tone positions at the estimated `(τ, ν)`, undoes the hop offset to recover
-energies per data value, and forms per-bit log-likelihood ratios. With
-`γ̂` the estimated symbol SNR and `s_d = e_d · γ̂ / (1 + γ̂)`:
+tone positions at the estimated `(τ, ν)`. Each tone bin is normalised by its
+own noise level `n_t`, the 75th percentile of that bin's energy over the
+block divided by ln 4: because the hop places the wanted signal on any one
+bin only one symbol in sixteen, this measures the bin's noise plus whatever
+interferer sits on it, so a carrier or keyed CW inside the lane becomes a
+quiet bin instead of winning every decision. The receiver then undoes the
+hop offset to recover energies per data value `s_d = e_t / n_t` and forms
+per-bit log-likelihood ratios:
 
     L_b = max_{d : bit_b(d) = 0} s_d − max_{d : bit_b(d) = 1} s_d
 

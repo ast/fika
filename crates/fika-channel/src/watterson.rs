@@ -81,9 +81,42 @@ fn tap_process<R: Rng>(len: usize, fs: f64, spread_hz: f64, rng: &mut R) -> Vec<
         .collect()
 }
 
-/// Pass `x` through the channel. Noise is not added here.
+/// Pass `x` through the channel: multipath fading, frequency shift and
+/// drift, then interferers, impulsive noise and the rig passband.
+/// Background noise is not added here (see `add_awgn`). Interferer and
+/// impulse levels are relative to `reference_amplitude`, the wanted
+/// signal's peak; pass 0.5 for the default transmitter.
+pub fn apply_with_reference<R: Rng>(
+    spec: &ChannelSpec,
+    x: &[f32],
+    fs: f64,
+    reference_amplitude: f64,
+    rng: &mut R,
+) -> Vec<f32> {
+    let mut y = propagate(spec, x, fs, rng);
+    for i in &spec.interferers {
+        let r = crate::interferer::render(i, y.len(), fs, reference_amplitude, rng);
+        for (a, b) in y.iter_mut().zip(r.iter()) {
+            *a += b;
+        }
+    }
+    if let Some(imp) = &spec.impulsive {
+        crate::impulsive::add(&mut y, imp, fs, reference_amplitude, rng);
+    }
+    if spec.bandpass {
+        y = crate::filter::ssb_passband(&y, fs);
+    }
+    y
+}
+
+/// `apply_with_reference` with the default transmitter level of 0.5.
 pub fn apply<R: Rng>(spec: &ChannelSpec, x: &[f32], fs: f64, rng: &mut R) -> Vec<f32> {
-    if spec.paths.is_empty() && spec.freq_shift_hz == 0.0 {
+    apply_with_reference(spec, x, fs, 0.5, rng)
+}
+
+/// Multipath and frequency shift/drift only.
+fn propagate<R: Rng>(spec: &ChannelSpec, x: &[f32], fs: f64, rng: &mut R) -> Vec<f32> {
+    if spec.paths.is_empty() && spec.freq_shift_hz == 0.0 && spec.drift_hz_per_s == 0.0 {
         return x.to_vec();
     }
     let xa = analytic(x);
@@ -172,11 +205,7 @@ mod tests {
         let fs = 12_000.0;
         let x = tone(24_000, 1000.0, fs);
         let mut rng = rand::rngs::StdRng::seed_from_u64(1);
-        let spec = ChannelSpec {
-            name: "shift",
-            paths: Vec::new(),
-            freq_shift_hz: 100.0,
-        };
+        let spec = ChannelSpec::awgn().with_shift(100.0);
         let y = apply(&spec, &x, fs, &mut rng);
         let mid = &y[4000..20000];
         let crossings = mid

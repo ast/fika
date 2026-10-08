@@ -49,6 +49,18 @@ pub struct SimArgs {
     /// Carrier level relative to the signal, dB.
     #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
     pub carrier_db: f64,
+    /// Extra interferer: "carrier:<hz>:<db>", "cw:<hz>:<db>", "rtty:<hz>:<db>", "psk31:<hz>:<db>" (dB relative to the signal). Repeatable.
+    #[arg(long = "interferer", allow_hyphen_values = true)]
+    pub interferers: Vec<String>,
+    /// Impulsive noise "rate_hz:duration_ms:level_db", e.g. 5:2:20.
+    #[arg(long, allow_hyphen_values = true)]
+    pub impulsive: Option<String>,
+    /// Linear frequency drift, Hz per second.
+    #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+    pub drift: f64,
+    /// Apply a 300–2700 Hz SSB receiver passband.
+    #[arg(long)]
+    pub bandpass: bool,
     #[arg(long, default_value_t = 40.0)]
     pub threshold: f32,
     /// Print a breakdown of false detections by profile and kind.
@@ -111,14 +123,62 @@ fn parse_sweep(s: &str) -> Result<Vec<f64>> {
     Ok(v)
 }
 
+/// "kind:hz:db" → Interferer.
+pub fn parse_interferer(s: &str) -> Result<fika_channel::Interferer> {
+    use fika_channel::Interferer;
+    let parts: Vec<&str> = s.split(':').collect();
+    let [kind, hz, db] = parts[..] else {
+        bail!("interferer must be kind:hz:db, got '{s}'")
+    };
+    let hz: f64 = hz.parse()?;
+    let db: f64 = db.parse()?;
+    Ok(match kind.to_ascii_lowercase().as_str() {
+        "carrier" => Interferer::Carrier {
+            freq_hz: hz,
+            level_db: db,
+        },
+        "cw" => Interferer::Cw {
+            freq_hz: hz,
+            level_db: db,
+            wpm: 25.0,
+        },
+        "rtty" => Interferer::Rtty {
+            center_hz: hz,
+            level_db: db,
+        },
+        "psk31" | "psk" => Interferer::Psk31 {
+            freq_hz: hz,
+            level_db: db,
+        },
+        other => bail!("unknown interferer kind '{other}'"),
+    })
+}
+
 pub fn run(args: SimArgs) -> Result<()> {
-    let spec = ChannelSpec::from_name(&args.channel).ok_or_else(|| {
+    let mut spec = ChannelSpec::from_name(&args.channel).ok_or_else(|| {
         anyhow::anyhow!(
             "unknown channel '{}', expected one of {:?}",
             args.channel,
-            ChannelSpec::NAMES
+            ChannelSpec::names()
         )
     })?;
+    for i in &args.interferers {
+        spec = spec.with_interferer(parse_interferer(i)?);
+    }
+    if let Some(imp) = &args.impulsive {
+        let v: Vec<f64> = imp
+            .split(':')
+            .map(|p| p.parse::<f64>())
+            .collect::<Result<_, _>>()?;
+        let [rate, dur, level] = v[..] else {
+            bail!("impulsive must be rate_hz:duration_ms:level_db")
+        };
+        spec = spec.with_impulsive(rate, dur, level);
+    }
+    spec = spec.with_drift(args.drift);
+    if args.bandpass {
+        spec = spec.with_bandpass();
+    }
     let snrs = match (&args.sweep, args.snr) {
         (Some(s), _) => parse_sweep(s)?,
         (None, Some(x)) => vec![x],

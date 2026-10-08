@@ -4,12 +4,15 @@
 
 pub mod awgn;
 pub mod clock;
+pub mod filter;
+pub mod impulsive;
 pub mod interference;
+pub mod interferer;
 pub mod spec;
 pub mod watterson;
 
 pub use awgn::{add_awgn, noise_sigma};
 pub use clock::resample_ppm;
 pub use interference::add_carrier;
-pub use spec::{ChannelSpec, Path};
+pub use spec::{ChannelSpec, Impulsive, Interferer, Path};
 pub use watterson::apply;

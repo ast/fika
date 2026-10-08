@@ -45,3 +45,7 @@ tui config="fika.toml":
 tui-loopback:
     printf '[station]\ncall = "SM6WJM"\ngrid = "JO57"\n[audio]\ninput = "none"\noutput = "default"\nloopback = true\n' > /tmp/fika-loopback.toml
     cargo run --release -p fika-tui -- -c /tmp/fika-loopback.toml
+
+# Channel regression suite: decode rate per scenario against a floor.
+channels:
+    cargo test --release -p fika-cli --test channels -- --ignored --nocapture

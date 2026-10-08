@@ -111,43 +111,44 @@ impl Demodulator {
         let block_start_symbol = PREAMBLE_SYMBOLS + index * kind.block_symbols();
         let m0 = index * kind.block_symbols(); // hop counter at block start
 
-        // Collect energies per data symbol, hop removed.
+        // Energies per symbol, tone-indexed (hop not yet removed).
         let n_data = kind.data_symbols();
-        let mut e_all: Vec<[f32; TONES]> = Vec::with_capacity(n_data);
-        let mut noise_samples: Vec<f32> = Vec::with_capacity(n_data * (TONES - 1));
-        let mut peak_sum = 0f64;
+        let mut e_tone_all: Vec<[f32; TONES]> = Vec::with_capacity(n_data);
         for s in 0..n_data {
             let sym = block_start_symbol + PILOT_SYMBOLS + s;
-            let m = m0 + PILOT_SYMBOLS + s;
             let start = (det.start_sample + sym as f64 * sps as f64).round() as i64;
-            let e_tone = self.tone_energies(samples, start, sps, f0);
+            e_tone_all.push(self.tone_energies(samples, start, sps, f0));
+        }
+        // Per-tone-bin noise level: the data hop puts our signal on any one
+        // bin only one symbol in sixteen, so the 75th percentile of a bin's
+        // energy over the block measures that bin's noise *and* whatever
+        // interferer sits on it. Normalising per bin turns a carrier or
+        // keyed CW inside the lane into a quiet bin instead of a winner
+        // in every symbol's max-log decision.
+        let mut noise_tone = [1f32; TONES];
+        let mut col: Vec<f32> = Vec::with_capacity(n_data);
+        for (k, nt) in noise_tone.iter_mut().enumerate() {
+            col.clear();
+            col.extend(e_tone_all.iter().map(|e| e[k]));
+            let idx = (col.len() * 3 / 4).min(col.len() - 1);
+            let (_, p75, _) = col.select_nth_unstable_by(idx, |a, b| a.total_cmp(b));
+            // 75th percentile of an exponential is ln 4 times its mean.
+            *nt = (*p75 / 4f32.ln()).max(1e-12);
+        }
+        // Hop removal and SNR estimate on the normalised energies.
+        let mut e_all: Vec<[f32; TONES]> = Vec::with_capacity(n_data);
+        let mut peak_sum = 0f64;
+        for (s, e_tone) in e_tone_all.iter().enumerate() {
+            let m = m0 + PILOT_SYMBOLS + s;
             let mut e_val = [0f32; TONES];
             for (tone, &e) in e_tone.iter().enumerate() {
-                e_val[hop::unmap(tone as u8, m, det.phase) as usize] = e;
+                e_val[hop::unmap(tone as u8, m, det.phase) as usize] = e / noise_tone[tone];
             }
-            let (imax, &emax) = e_val
-                .iter()
-                .enumerate()
-                .max_by(|a, b| a.1.total_cmp(b.1))
-                .unwrap();
-            peak_sum += emax as f64;
-            noise_samples.extend(
-                e_val
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| *i != imax)
-                    .map(|(_, &v)| v),
-            );
+            peak_sum += e_val.iter().copied().fold(0f32, f32::max) as f64;
             e_all.push(e_val);
         }
-        // Robust noise level: median of non-peak energies, scaled to the mean
-        // of an exponential distribution.
-        let noise = {
-            let k = noise_samples.len() / 2;
-            let (_, med, _) = noise_samples.select_nth_unstable_by(k, |a, b| a.total_cmp(b));
-            (*med / 2f32.ln()).max(1e-12)
-        };
-        let es_n0 = (peak_sum as f32 / n_data as f32 / noise - 1.0).max(0.0);
+        let noise = 1f32;
+        let es_n0 = (peak_sum as f32 / n_data as f32 - 1.0).max(0.0);
 
         // Max-log LLRs, positive = bit 0.
         let mut llrs_air = Vec::with_capacity(n_data * BITS_PER_SYMBOL);
