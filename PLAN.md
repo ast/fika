@@ -93,8 +93,12 @@ and neither blocks the modem. v1 is one CLI binary and rigctld.
    WAV round trip, sensitivity sweeps, multi-station scenarios. Open: per-block
    tracking on long bursts, successive interference cancellation, a larger
    text corpus for the prior, the spec appendices and test vectors.
-3. **v2 — protocol and CLI on air.** ACK and retry, heard list, LBT, rigctld
-   client, cpal audio in and out, simulated CAT for IC-705 and FT-891.
+3. **v2 — station and TUI.** *Mostly done.* `fika-station` (config, cpal
+   audio, rigctld, streaming receiver, transmit queue, heard list, automatic
+   ACK, beacons, listen-before-talk, receiver blanking while keyed, ACK
+   window hold, software loopback) and `fika-tui`. Open: sender-side retries
+   when no ACK arrives, automatic beacons, simulated CAT for the IC-705 and
+   FT-891.
 4. **v3 — on air.** Cross-compile for aarch64, run on `shack` with the IC-705,
    first QSOs, tune thresholds against real paths.
 5. **Later.** Relay, beacon scheduling refinements, web UI for a phone over

@@ -1,7 +1,9 @@
 //! The station: owns audio and threads, exposes a poll-based API to a UI.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -26,7 +28,27 @@ struct TxJob {
     burst: Burst,
     lane: usize,
     profile: Profile,
+    /// Listen before talk (everything except ACKs, SPEC §12).
+    lbt: bool,
+    /// After this burst, hold our own transmissions for the ACK window.
+    ack_window_s: Option<f64>,
 }
+
+/// State shared between the receive and transmit threads.
+#[derive(Default)]
+struct Shared {
+    /// PTT is on.
+    ptt: AtomicBool,
+    /// Epoch milliseconds when PTT last went off.
+    ptt_off_ms: AtomicU64,
+    /// Per lane: epoch seconds until which the lane is busy.
+    lane_busy_until: Mutex<[f64; fika_modem::params::LANES]>,
+}
+
+/// Receiver guard after PTT release, covering rig switching and audio latency.
+const RX_BLANK_GUARD_MS: u64 = 200;
+/// Longest a transmission waits for a busy lane before going anyway.
+const LBT_MAX_WAIT_S: f64 = 90.0;
 
 enum RxCommand {
     Inject(Vec<f32>),
@@ -44,6 +66,7 @@ pub struct Station {
     _audio: Option<AudioEngine>,
     events: Receiver<StationEvent>,
     tx_jobs: Sender<TxJob>,
+    rx_cmds: Sender<RxCommand>,
     pub heard: HeardList,
     pub chat: Vec<ChatLine>,
     pub log: VecDeque<String>,
@@ -73,6 +96,8 @@ impl Station {
             AudioEngine::open(&cfg.audio, input_tx.clone()).context("open audio devices")?;
         let audio_names = (audio.input_name.clone(), audio.output_name.clone());
         let has_input = !cfg.audio.input.eq_ignore_ascii_case("none");
+        let shared = Arc::new(Shared::default());
+        let my_call = callsign::pack(&cfg.station.call);
 
         // Receiver thread.
         {
@@ -82,9 +107,15 @@ impl Station {
                 threshold: cfg.modem.threshold,
                 ..Default::default()
             };
+            let shared = shared.clone();
+            let loopback = cfg.audio.loopback;
             thread::Builder::new()
                 .name("fika-rx".into())
-                .spawn(move || rx_thread(rate, has_input, sync, input_rx, rx_cmd_rx, ev))?;
+                .spawn(move || {
+                    rx_thread(
+                        rate, has_input, sync, my_call, loopback, shared, input_rx, rx_cmd_rx, ev,
+                    )
+                })?;
         }
 
         // Transmit / rig thread.
@@ -93,14 +124,17 @@ impl Station {
             let rig_cfg = cfg.rig.clone();
             let loopback = cfg.audio.loopback;
             let level = cfg.audio.tx_level;
+            let shared = shared.clone();
+            let rx_cmd_tx = rx_cmd_tx.clone();
             thread::Builder::new()
                 .name("fika-tx".into())
                 .spawn(move || {
-                    tx_thread(rig_cfg, output, loopback, level, tx_jobs_rx, rx_cmd_tx, ev)
+                    tx_thread(
+                        rig_cfg, output, loopback, level, shared, tx_jobs_rx, rx_cmd_tx, ev,
+                    )
                 })?;
         }
 
-        let my_call = callsign::pack(&cfg.station.call);
         let (dest, dest_label) = match cfg.station.groups.first() {
             Some(g) => (Destination::Group(group::group_id(g)), format!("@{g}")),
             None => (Destination::All, "all".into()),
@@ -117,6 +151,7 @@ impl Station {
             _audio: Some(audio),
             events,
             tx_jobs,
+            rx_cmds: rx_cmd_tx,
             heard: HeardList::default(),
             chat: Vec::new(),
             log: VecDeque::new(),
@@ -147,7 +182,15 @@ impl Station {
                 ""
             }
         ));
+        if st.cfg.audio.loopback && st.cfg.rig.kind != RigKind::None {
+            st.push_log("WARNING: loopback is on together with rig control; every message will decode twice".into());
+        }
         Ok(st)
+    }
+
+    /// Test hook: mix 12 kHz audio into the receiver as if it were heard.
+    pub fn inject_audio(&self, samples_12k: Vec<f32>) {
+        let _ = self.rx_cmds.send(RxCommand::Inject(samples_12k));
     }
 
     pub fn push_log(&mut self, s: String) {
@@ -215,11 +258,20 @@ impl Station {
             }),
             msg_id,
         });
+        // SPEC §13: the recipient answers from 1 s after the burst; allow
+        // decode latency and the ACK airtime before we transmit again.
+        let ack_window = ack_req.then(|| {
+            let ack_symbols =
+                fika_modem::params::PREAMBLE_SYMBOLS + FrameKind::Short.block_symbols();
+            3.0 + ack_symbols as f64 * self.profile.symbol_s()
+        });
         self.tx_jobs.send(TxJob {
             label: format!("message {msg_id:04X}"),
             burst,
             lane: self.lane,
             profile: self.profile,
+            lbt: true,
+            ack_window_s: ack_window,
         })?;
         Ok(())
     }
@@ -251,6 +303,8 @@ impl Station {
             burst,
             lane: self.lane,
             profile: self.profile,
+            lbt: true,
+            ack_window_s: None,
         })?;
         Ok(())
     }
@@ -262,6 +316,8 @@ impl Station {
             burst,
             lane: self.lane,
             profile,
+            lbt: false,
+            ack_window_s: None,
         })?;
         Ok(())
     }
@@ -413,6 +469,15 @@ impl Station {
                     det.lane, det.profile
                 ));
             }
+            StationEvent::BurstLost { det } => {
+                self.push_log(format!(
+                    "burst lane {} {} lost while we were transmitting",
+                    det.lane, det.profile
+                ));
+            }
+            StationEvent::TxWaiting { label, lane } => {
+                self.push_log(format!("{label}: lane {lane} busy, waiting"));
+            }
             StationEvent::TxStarted { label, airtime_s } => {
                 self.tx_busy = Some((label.clone(), Instant::now(), *airtime_s));
                 self.rig.ptt = true;
@@ -486,10 +551,14 @@ pub fn index_to_grid(i: u16) -> Option<String> {
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rx_thread(
     rate: u32,
     has_input: bool,
     sync: SyncConfig,
+    my_call: u32,
+    loopback: bool,
+    shared: Arc<Shared>,
     input: Receiver<Vec<f32>>,
     cmds: Receiver<RxCommand>,
     ev: Sender<StationEvent>,
@@ -497,22 +566,21 @@ fn rx_thread(
     let factor = (rate / fika_modem::params::RX_SAMPLE_RATE) as usize;
     let mut dec = StreamDecimator::new(factor);
     let mut srx = StreamReceiver::new(sync);
+    srx.my_call = my_call;
     let mut out12 = Vec::new();
     let started = Instant::now();
     let mut synthetic_sent = 0u64;
+    let mut blank_start: Option<f64> = None;
     loop {
         while let Ok(cmd) = cmds.try_recv() {
             match cmd {
                 RxCommand::Inject(s) => srx.inject(&s),
             }
         }
+        out12.clear();
         if has_input {
             match input.recv_timeout(Duration::from_millis(100)) {
-                Ok(chunk) => {
-                    out12.clear();
-                    dec.process(&chunk, &mut out12);
-                    srx.push(&out12);
-                }
+                Ok(chunk) => dec.process(&chunk, &mut out12),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
@@ -521,13 +589,40 @@ fn rx_thread(
             thread::sleep(Duration::from_millis(50));
             let due = (started.elapsed().as_secs_f64() * srx.fs() as f64) as u64;
             if due > synthetic_sent {
-                let n = (due - synthetic_sent) as usize;
-                srx.push(&vec![0f32; n]);
+                out12.resize((due - synthetic_sent) as usize, 0.0);
                 synthetic_sent = due;
             }
         }
+        if !out12.is_empty() {
+            // Half duplex: while we key the rig (and shortly after) the
+            // input carries sidetone, monitor audio or switching clicks,
+            // not signals. Blank it, except in software loopback mode where
+            // the injected copy is the whole point.
+            let now_ms = (epoch_secs() * 1000.0) as u64;
+            let keyed = shared.ptt.load(Ordering::Relaxed)
+                || now_ms < shared.ptt_off_ms.load(Ordering::Relaxed) + RX_BLANK_GUARD_MS;
+            if keyed && !loopback {
+                out12.iter_mut().for_each(|v| *v = 0.0);
+                if blank_start.is_none() {
+                    blank_start = Some(srx.position() as f64);
+                }
+            } else if let Some(start) = blank_start.take() {
+                srx.note_tx(start, srx.position() as f64);
+            }
+            srx.push(&out12);
+        }
         let now = epoch_secs();
-        for e in srx.process() {
+        let events = srx.process();
+        {
+            let pos = srx.position() as f64;
+            let fs = srx.fs() as f64;
+            let status = srx.lane_status();
+            let mut lanes = shared.lane_busy_until.lock().unwrap();
+            for (i, st) in status.iter().enumerate() {
+                lanes[i] = now + (st.busy_until - pos) / fs;
+            }
+        }
+        for e in events {
             let sev = match e {
                 RxEvent::Detected(det) => StationEvent::Detected { det, epoch: now },
                 RxEvent::Message {
@@ -553,6 +648,7 @@ fn rx_thread(
                     epoch: now,
                 },
                 RxEvent::Failed(det) => StationEvent::BurstFailed { det },
+                RxEvent::Lost(det) => StationEvent::BurstLost { det },
                 RxEvent::Level { rms_db, peak } => StationEvent::Level { rms_db, peak },
                 RxEvent::Spectrum(row) => StationEvent::Spectrum(row),
             };
@@ -563,11 +659,48 @@ fn rx_thread(
     }
 }
 
+/// Listen before talk (SPEC §12): wait for the lane to be idle, back off a
+/// random 0..7 slots of 0.5 s, and re-check. Gives up after `LBT_MAX_WAIT_S`.
+fn listen_before_talk(shared: &Shared, lane: usize, label: &str, ev: &Sender<StationEvent>) {
+    let busy = |shared: &Shared| shared.lane_busy_until.lock().unwrap()[lane] > epoch_secs();
+    let started = Instant::now();
+    let mut announced = false;
+    loop {
+        if started.elapsed().as_secs_f64() > LBT_MAX_WAIT_S {
+            let _ = ev.send(StationEvent::Log(format!(
+                "{label}: lane {lane} still busy after {LBT_MAX_WAIT_S:.0} s, transmitting anyway"
+            )));
+            return;
+        }
+        if busy(shared) {
+            if !announced {
+                announced = true;
+                let _ = ev.send(StationEvent::TxWaiting {
+                    label: label.to_string(),
+                    lane,
+                });
+            }
+            thread::sleep(Duration::from_millis(250));
+            continue;
+        }
+        if announced {
+            let slots = rand::rng().random_range(0..=7u64);
+            thread::sleep(Duration::from_millis(500 * slots));
+            if busy(shared) {
+                continue;
+            }
+        }
+        return;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn tx_thread(
     rig_cfg: crate::config::RigCfg,
     mut output: OutputHandle,
     loopback: bool,
     level: f32,
+    shared: Arc<Shared>,
     jobs: Receiver<TxJob>,
     rx_cmds: Sender<RxCommand>,
     ev: Sender<StationEvent>,
@@ -586,6 +719,7 @@ fn tx_thread(
     let mut tx_12k = Transmitter::new(fika_modem::params::RX_SAMPLE_RATE);
     tx_12k.amplitude = level;
     let mut last_poll = Instant::now() - Duration::from_secs(10);
+    let mut hold_until = Instant::now();
     loop {
         if last_poll.elapsed() > Duration::from_secs(2) {
             last_poll = Instant::now();
@@ -601,6 +735,13 @@ fn tx_thread(
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         };
+        // Hold for an outstanding ACK window from our previous message.
+        if job.lbt && hold_until > Instant::now() {
+            thread::sleep(hold_until - Instant::now());
+        }
+        if job.lbt {
+            listen_before_talk(&shared, job.lane, &job.label, &ev);
+        }
         let airtime = job.burst.airtime_s(job.profile);
         let audio = match tx_dev.render(&job.burst, job.lane, job.profile, 0.0) {
             Ok(a) => a,
@@ -613,6 +754,7 @@ fn tx_thread(
             let _ = ev.send(StationEvent::Log(format!("PTT on failed: {e}")));
             continue;
         }
+        shared.ptt.store(true, Ordering::Relaxed);
         let _ = ev.send(StationEvent::TxStarted {
             label: job.label.clone(),
             airtime_s: airtime,
@@ -625,6 +767,13 @@ fn tx_thread(
         thread::sleep(Duration::from_millis(rig_cfg.tx_tail_ms));
         if let Err(e) = rig.ptt(false) {
             let _ = ev.send(StationEvent::Log(format!("PTT off failed: {e}")));
+        }
+        shared
+            .ptt_off_ms
+            .store((epoch_secs() * 1000.0) as u64, Ordering::Relaxed);
+        shared.ptt.store(false, Ordering::Relaxed);
+        if let Some(w) = job.ack_window_s {
+            hold_until = Instant::now() + Duration::from_secs_f64(w);
         }
         let _ = ev.send(StationEvent::TxFinished);
     }

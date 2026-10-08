@@ -49,6 +49,15 @@ pub enum StationEvent {
     BurstFailed {
         det: Detection,
     },
+    /// A burst overlapped one of our own transmissions.
+    BurstLost {
+        det: Detection,
+    },
+    /// Listen-before-talk is holding a transmission.
+    TxWaiting {
+        label: String,
+        lane: usize,
+    },
     TxStarted {
         label: String,
         airtime_s: f64,

@@ -42,3 +42,62 @@ profile = "fast"
     assert_eq!(m.text, "headless loopback, hej!");
     assert_eq!(st.chat.len(), 2, "own line plus decoded line");
 }
+
+/// Listen before talk: a foreign burst is already on our lane when we
+/// press send, so our transmission must wait for it to end.
+#[test]
+fn transmission_waits_for_a_busy_lane() {
+    use fika_modem::{Burst, FrameKind, Profile, Transmitter};
+    use fika_proto::{Destination, Message, callsign};
+
+    let mut cfg: Config = toml::from_str(
+        "[station]\ncall = \"SM6WJM\"\n[audio]\ninput = \"none\"\noutput = \"none\"\nloopback = true\n[modem]\nlane = 2\n",
+    )
+    .unwrap();
+    cfg.rig.tx_delay_ms = 10;
+    let mut st = Station::start(cfg).unwrap();
+
+    let foreign = Message {
+        sender: callsign::pack("AD8KM"),
+        dest: Destination::All,
+        msg_id: 9,
+        ack_req: false,
+        text: "already talking on lane two for a while".into(),
+    };
+    let burst = Burst::new(FrameKind::Long, 3, foreign.to_blocks().unwrap()).unwrap();
+    let foreign_airtime = burst.airtime_s(Profile::Fast);
+    let audio = Transmitter::new(12_000)
+        .render(&burst, 2, Profile::Fast, 0.0)
+        .unwrap();
+    // Let the receiver start its clock, then put the foreign burst on air.
+    std::thread::sleep(Duration::from_millis(600));
+    let t0 = Instant::now();
+    st.inject_audio(audio);
+    std::thread::sleep(Duration::from_millis(1500));
+    st.send_text("me too").unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(40);
+    let mut tx_started_at = None;
+    let mut waited = false;
+    let mut foreign_decoded = false;
+    while Instant::now() < deadline && tx_started_at.is_none() {
+        for ev in st.poll() {
+            match ev {
+                StationEvent::TxWaiting { .. } => waited = true,
+                StationEvent::TxStarted { .. } => tx_started_at = Some(t0.elapsed().as_secs_f64()),
+                StationEvent::Message { message, .. } if message.sender == foreign.sender => {
+                    foreign_decoded = true
+                }
+                _ => {}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let started = tx_started_at.expect("our burst eventually goes out");
+    assert!(waited, "listen-before-talk should have reported waiting");
+    assert!(
+        started >= foreign_airtime - 0.5,
+        "transmitted at {started:.1} s, before the foreign burst ended at {foreign_airtime:.1} s"
+    );
+    assert!(foreign_decoded, "the foreign burst should still decode");
+}
