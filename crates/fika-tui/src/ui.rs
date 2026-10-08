@@ -311,6 +311,7 @@ fn draw_help(f: &mut Frame, area: Rect) {
         Line::from("/beacon                   send a beacon"),
         Line::from("/clear                    clear the chat"),
         Line::from("/quit  (or Ctrl-C)        exit"),
+        Line::from("Esc or C-g                ABORT transmission, PTT off"),
         Line::from(""),
         Line::from("Editing: Emacs keys. C-a C-e C-b C-f M-b M-f move,"),
         Line::from("C-h C-d delete, C-k C-u C-w M-d kill, C-y yank,"),

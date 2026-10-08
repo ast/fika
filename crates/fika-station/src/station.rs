@@ -25,6 +25,8 @@ use crate::time::epoch_secs;
 
 struct TxJob {
     label: String,
+    /// Message id for status updates in the chat, if this is a message.
+    msg_id: Option<u16>,
     burst: Burst,
     lane: usize,
     profile: Profile,
@@ -39,6 +41,8 @@ struct TxJob {
 struct Shared {
     /// PTT is on.
     ptt: AtomicBool,
+    /// Operator asked to abort the current and queued transmissions.
+    abort: AtomicBool,
     /// Epoch milliseconds when PTT last went off.
     ptt_off_ms: AtomicU64,
     /// Per lane: epoch seconds until which the lane is busy.
@@ -52,6 +56,8 @@ const LBT_MAX_WAIT_S: f64 = 90.0;
 
 enum RxCommand {
     Inject(Vec<f32>),
+    /// Drop any pending loopback injection (transmission aborted).
+    ClearInject,
 }
 
 pub struct RigStatus {
@@ -67,6 +73,7 @@ pub struct Station {
     events: Receiver<StationEvent>,
     tx_jobs: Sender<TxJob>,
     rx_cmds: Sender<RxCommand>,
+    shared: Arc<Shared>,
     pub heard: HeardList,
     pub chat: Vec<ChatLine>,
     pub log: VecDeque<String>,
@@ -152,6 +159,7 @@ impl Station {
             events,
             tx_jobs,
             rx_cmds: rx_cmd_tx,
+            shared,
             heard: HeardList::default(),
             chat: Vec::new(),
             log: VecDeque::new(),
@@ -191,6 +199,16 @@ impl Station {
     /// Test hook: mix 12 kHz audio into the receiver as if it were heard.
     pub fn inject_audio(&self, samples_12k: Vec<f32>) {
         let _ = self.rx_cmds.send(RxCommand::Inject(samples_12k));
+    }
+
+    /// Escape hatch: stop the current transmission at once, release PTT
+    /// and drop everything queued. Returns whether anything was in flight.
+    pub fn abort_tx(&mut self) -> bool {
+        let in_flight = self.tx_busy.is_some();
+        self.shared.abort.store(true, Ordering::Relaxed);
+        let _ = self.rx_cmds.send(RxCommand::ClearInject);
+        self.push_log("abort requested".into());
+        in_flight
     }
 
     pub fn push_log(&mut self, s: String) {
@@ -267,6 +285,7 @@ impl Station {
         });
         self.tx_jobs.send(TxJob {
             label: format!("message {msg_id:04X}"),
+            msg_id: Some(msg_id),
             burst,
             lane: self.lane,
             profile: self.profile,
@@ -300,6 +319,7 @@ impl Station {
         )?;
         self.tx_jobs.send(TxJob {
             label: "beacon".into(),
+            msg_id: None,
             burst,
             lane: self.lane,
             profile: self.profile,
@@ -313,6 +333,7 @@ impl Station {
         let burst = Burst::new(FrameKind::Short, (ack.msg_id % 16) as u8, vec![ack.pack()])?;
         self.tx_jobs.send(TxJob {
             label: format!("ack {:04X}", ack.msg_id),
+            msg_id: None,
             burst,
             lane: self.lane,
             profile,
@@ -487,6 +508,19 @@ impl Station {
                 self.tx_busy = None;
                 self.rig.ptt = false;
             }
+            StationEvent::TxAborted { label, msg_id } => {
+                self.tx_busy = None;
+                self.rig.ptt = false;
+                if let Some(id) = msg_id {
+                    for line in self.chat.iter_mut().rev() {
+                        if line.mine && line.msg_id == *id {
+                            line.status = Some("failed (aborted)".into());
+                            break;
+                        }
+                    }
+                }
+                self.push_log(format!("tx {label} aborted"));
+            }
             StationEvent::Rig {
                 connected,
                 freq_hz,
@@ -575,6 +609,7 @@ fn rx_thread(
         while let Ok(cmd) = cmds.try_recv() {
             match cmd {
                 RxCommand::Inject(s) => srx.inject(&s),
+                RxCommand::ClearInject => srx.clear_inject(),
             }
         }
         out12.clear();
@@ -661,16 +696,25 @@ fn rx_thread(
 
 /// Listen before talk (SPEC §12): wait for the lane to be idle, back off a
 /// random 0..7 slots of 0.5 s, and re-check. Gives up after `LBT_MAX_WAIT_S`.
-fn listen_before_talk(shared: &Shared, lane: usize, label: &str, ev: &Sender<StationEvent>) {
+/// Returns false if the wait was aborted.
+fn listen_before_talk(
+    shared: &Shared,
+    lane: usize,
+    label: &str,
+    ev: &Sender<StationEvent>,
+) -> bool {
     let busy = |shared: &Shared| shared.lane_busy_until.lock().unwrap()[lane] > epoch_secs();
     let started = Instant::now();
     let mut announced = false;
     loop {
+        if shared.abort.load(Ordering::Relaxed) {
+            return false;
+        }
         if started.elapsed().as_secs_f64() > LBT_MAX_WAIT_S {
             let _ = ev.send(StationEvent::Log(format!(
                 "{label}: lane {lane} still busy after {LBT_MAX_WAIT_S:.0} s, transmitting anyway"
             )));
-            return;
+            return true;
         }
         if busy(shared) {
             if !announced {
@@ -685,12 +729,18 @@ fn listen_before_talk(shared: &Shared, lane: usize, label: &str, ev: &Sender<Sta
         }
         if announced {
             let slots = rand::rng().random_range(0..=7u64);
-            thread::sleep(Duration::from_millis(500 * slots));
+            let until = Instant::now() + Duration::from_millis(500 * slots);
+            while Instant::now() < until {
+                if shared.abort.load(Ordering::Relaxed) {
+                    return false;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
             if busy(shared) {
                 continue;
             }
         }
-        return;
+        return true;
     }
 }
 
@@ -732,15 +782,33 @@ fn tx_thread(
         }
         let job = match jobs.recv_timeout(Duration::from_millis(200)) {
             Ok(j) => j,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Nothing in flight: a stale abort request is cleared.
+                shared.abort.store(false, Ordering::Relaxed);
+                continue;
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         };
-        // Hold for an outstanding ACK window from our previous message.
-        if job.lbt && hold_until > Instant::now() {
-            thread::sleep(hold_until - Instant::now());
+        let abort_job = |job: &TxJob, ev: &Sender<StationEvent>| {
+            let _ = ev.send(StationEvent::TxAborted {
+                label: job.label.clone(),
+                msg_id: job.msg_id,
+            });
+        };
+        if shared.abort.load(Ordering::Relaxed) {
+            abort_job(&job, &ev);
+            continue;
         }
-        if job.lbt {
-            listen_before_talk(&shared, job.lane, &job.label, &ev);
+        // Hold for an outstanding ACK window from our previous message.
+        while job.lbt && hold_until > Instant::now() {
+            if shared.abort.load(Ordering::Relaxed) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        if job.lbt && !listen_before_talk(&shared, job.lane, &job.label, &ev) {
+            abort_job(&job, &ev);
+            continue;
         }
         let airtime = job.burst.airtime_s(job.profile);
         let audio = match tx_dev.render(&job.burst, job.lane, job.profile, 0.0) {
@@ -763,8 +831,10 @@ fn tx_thread(
         if loopback && let Ok(a12) = tx_12k.render(&job.burst, job.lane, job.profile, 0.0) {
             let _ = rx_cmds.send(RxCommand::Inject(a12));
         }
-        output.play_blocking(&audio);
-        thread::sleep(Duration::from_millis(rig_cfg.tx_tail_ms));
+        let completed = output.play_blocking(&audio, &shared.abort);
+        if completed {
+            thread::sleep(Duration::from_millis(rig_cfg.tx_tail_ms));
+        }
         if let Err(e) = rig.ptt(false) {
             let _ = ev.send(StationEvent::Log(format!("PTT off failed: {e}")));
         }
@@ -772,10 +842,19 @@ fn tx_thread(
             .ptt_off_ms
             .store((epoch_secs() * 1000.0) as u64, Ordering::Relaxed);
         shared.ptt.store(false, Ordering::Relaxed);
-        if let Some(w) = job.ack_window_s {
-            hold_until = Instant::now() + Duration::from_secs_f64(w);
+        if completed {
+            if let Some(w) = job.ack_window_s {
+                hold_until = Instant::now() + Duration::from_secs_f64(w);
+            }
+            let _ = ev.send(StationEvent::TxFinished);
+        } else {
+            abort_job(&job, &ev);
+            // Drop everything queued behind the aborted transmission.
+            while let Ok(j) = jobs.try_recv() {
+                abort_job(&j, &ev);
+            }
+            shared.abort.store(false, Ordering::Relaxed);
         }
-        let _ = ev.send(StationEvent::TxFinished);
     }
 }
 

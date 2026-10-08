@@ -101,3 +101,48 @@ fn transmission_waits_for_a_busy_lane() {
     );
     assert!(foreign_decoded, "the foreign burst should still decode");
 }
+
+/// Escape hatch: aborting mid-burst releases PTT at once and marks the
+/// message failed.
+#[test]
+fn abort_stops_transmission_and_marks_message_failed() {
+    let mut cfg: Config = toml::from_str(
+        "[station]\ncall = \"SM6WJM\"\n[audio]\ninput = \"none\"\noutput = \"none\"\nloopback = true\n",
+    )
+    .unwrap();
+    cfg.rig.tx_delay_ms = 10;
+    let mut st = Station::start(cfg).unwrap();
+    let long = "x".repeat(60) + " " + &"y".repeat(60) + " " + &"z".repeat(60);
+    st.send_text(&long).unwrap();
+    let t0 = Instant::now();
+    let mut started = false;
+    while t0.elapsed() < Duration::from_secs(5) && !started {
+        for ev in st.poll() {
+            if let StationEvent::TxStarted { airtime_s, .. } = ev {
+                assert!(airtime_s > 8.0, "want a long burst, got {airtime_s}");
+                started = true;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(started);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(st.abort_tx());
+    let t_abort = Instant::now();
+    let mut aborted = None;
+    while t_abort.elapsed() < Duration::from_secs(3) && aborted.is_none() {
+        for ev in st.poll() {
+            if let StationEvent::TxAborted { .. } = ev {
+                aborted = Some(t_abort.elapsed());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let dt = aborted.expect("TxAborted event");
+    assert!(dt < Duration::from_millis(500), "abort took {dt:?}");
+    assert!(!st.rig.ptt);
+    assert_eq!(
+        st.chat.last().unwrap().status.as_deref(),
+        Some("failed (aborted)")
+    );
+}

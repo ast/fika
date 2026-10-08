@@ -63,6 +63,11 @@ pub enum StationEvent {
         airtime_s: f64,
     },
     TxFinished,
+    /// A transmission was aborted by the operator (or dropped from the queue).
+    TxAborted {
+        label: String,
+        msg_id: Option<u16>,
+    },
     Rig {
         connected: bool,
         freq_hz: Option<u64>,

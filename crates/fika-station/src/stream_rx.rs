@@ -142,6 +142,11 @@ impl StreamReceiver {
         self.inject.extend(samples.iter().copied());
     }
 
+    /// Drop any queued loopback audio (our transmission was aborted).
+    pub fn clear_inject(&mut self) {
+        self.inject.clear();
+    }
+
     /// Absolute sample position of "now".
     pub fn position(&self) -> u64 {
         self.total

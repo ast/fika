@@ -2,7 +2,7 @@
 //! lock-free ring the transmit thread fills and the callback drains.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 
 use anyhow::{Context, Result, bail};
@@ -31,6 +31,8 @@ pub struct OutputHandle {
     pub producer: Option<OutProducer>,
     pub played: Arc<AtomicU64>,
     pub rate: u32,
+    /// While set, the output callback discards the ring instead of playing it.
+    pub mute: Arc<AtomicBool>,
 }
 
 pub fn list_devices() -> Vec<String> {
@@ -140,6 +142,7 @@ fn build_output<T>(
     config: &StreamConfig,
     mut consumer: ringbuf::HeapCons<f32>,
     played: Arc<AtomicU64>,
+    mute: Arc<AtomicBool>,
 ) -> Result<cpal::Stream>
 where
     T: SizedSample + FromSample<f32>,
@@ -149,6 +152,12 @@ where
         config,
         move |data: &mut [T], _| {
             let mut n = 0u64;
+            if mute.load(Ordering::Relaxed) {
+                // Abort: throw away everything queued, output silence.
+                while consumer.try_pop().is_some() {
+                    n += 1;
+                }
+            }
             for frame in data.chunks_mut(channels) {
                 let v = match consumer.try_pop() {
                     Some(v) => {
@@ -177,6 +186,7 @@ impl AudioEngine {
         let host = cpal::default_host();
         let rate = cfg.sample_rate;
         let played = Arc::new(AtomicU64::new(0));
+        let mute = Arc::new(AtomicBool::new(false));
 
         let mut input_name = "none".to_string();
         let input = match find_device(&host, &cfg.input, true)? {
@@ -216,9 +226,15 @@ impl AudioEngine {
                 let (prod, cons) = rb.split();
                 producer = Some(prod);
                 let stream = match fmt {
-                    SampleFormat::F32 => build_output::<f32>(&dev, &config, cons, played.clone())?,
-                    SampleFormat::I16 => build_output::<i16>(&dev, &config, cons, played.clone())?,
-                    SampleFormat::I32 => build_output::<i32>(&dev, &config, cons, played.clone())?,
+                    SampleFormat::F32 => {
+                        build_output::<f32>(&dev, &config, cons, played.clone(), mute.clone())?
+                    }
+                    SampleFormat::I16 => {
+                        build_output::<i16>(&dev, &config, cons, played.clone(), mute.clone())?
+                    }
+                    SampleFormat::I32 => {
+                        build_output::<i32>(&dev, &config, cons, played.clone(), mute.clone())?
+                    }
                     other => bail!("unsupported output sample format {other:?}"),
                 };
                 stream.play()?;
@@ -239,6 +255,7 @@ impl AudioEngine {
                 producer,
                 played,
                 rate,
+                mute,
             },
         ))
     }
@@ -246,24 +263,47 @@ impl AudioEngine {
 
 impl OutputHandle {
     /// Blocking: push all samples into the ring, then wait until played.
-    pub fn play_blocking(&mut self, samples: &[f32]) {
+    /// Returns false if `abort` was raised; the ring is then drained and
+    /// silence follows within one callback period.
+    pub fn play_blocking(&mut self, samples: &[f32], abort: &AtomicBool) -> bool {
+        let tick = std::time::Duration::from_millis(20);
         let Some(prod) = self.producer.as_mut() else {
             // No output device: pretend to play in real time.
-            std::thread::sleep(std::time::Duration::from_secs_f64(
-                samples.len() as f64 / self.rate as f64,
-            ));
-            return;
+            let end = std::time::Instant::now()
+                + std::time::Duration::from_secs_f64(samples.len() as f64 / self.rate as f64);
+            while std::time::Instant::now() < end {
+                if abort.load(Ordering::Relaxed) {
+                    return false;
+                }
+                std::thread::sleep(tick);
+            }
+            return true;
         };
         let target = self.played.load(Ordering::Relaxed) + samples.len() as u64;
         let mut i = 0;
+        let mut ok = true;
         while i < samples.len() {
+            if abort.load(Ordering::Relaxed) {
+                ok = false;
+                break;
+            }
             i += prod.push_slice(&samples[i..]);
             if i < samples.len() {
-                std::thread::sleep(std::time::Duration::from_millis(20));
+                std::thread::sleep(tick);
             }
         }
-        while self.played.load(Ordering::Relaxed) < target {
-            std::thread::sleep(std::time::Duration::from_millis(20));
+        while ok && self.played.load(Ordering::Relaxed) < target {
+            if abort.load(Ordering::Relaxed) {
+                ok = false;
+                break;
+            }
+            std::thread::sleep(tick);
         }
+        if !ok {
+            self.mute.store(true, Ordering::Relaxed);
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            self.mute.store(false, Ordering::Relaxed);
+        }
+        ok
     }
 }

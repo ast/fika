@@ -51,8 +51,16 @@ impl App {
                 self.station.chat.clear();
                 return;
             }
-            KeyCode::Esc => {
-                self.show_help = false;
+            KeyCode::Esc | KeyCode::Char('g')
+                if code == KeyCode::Esc || mods.contains(KeyModifiers::CONTROL) =>
+            {
+                if self.show_help && code == KeyCode::Esc {
+                    self.show_help = false;
+                } else if self.station.abort_tx() {
+                    self.status = "transmission aborted".into();
+                } else {
+                    self.status = "nothing to abort".into();
+                }
                 return;
             }
             KeyCode::F(1) => {
