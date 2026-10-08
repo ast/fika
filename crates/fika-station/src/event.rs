@@ -62,6 +62,12 @@ pub enum StationEvent {
         airtime_s: f64,
     },
     TxFinished,
+    /// Receiver thread health: how far behind real time it is, and the
+    /// longest processing step in the last second.
+    RxHealth {
+        lag_s: f32,
+        max_step_ms: f32,
+    },
     /// A transmission was aborted by the operator (or dropped from the queue).
     TxAborted {
         label: String,

@@ -85,6 +85,9 @@ pub struct Station {
     pub peak: f32,
     pub spectrum: VecDeque<Vec<f32>>,
     pub tx_busy: Option<(String, Instant, f64)>,
+    /// Receiver thread lag behind real time, seconds.
+    pub rx_lag_s: f32,
+    pub rx_max_step_ms: f32,
     pub audio_names: (String, String),
     pending_acks: Vec<(Instant, Ack, Profile)>,
 }
@@ -189,6 +192,8 @@ impl Station {
             peak: 0.0,
             spectrum: VecDeque::new(),
             tx_busy: None,
+            rx_lag_s: 0.0,
+            rx_max_step_ms: 0.0,
             audio_names,
             pending_acks: Vec::new(),
         };
@@ -512,6 +517,15 @@ impl Station {
                 self.tx_busy = None;
                 self.rig.ptt = false;
             }
+            StationEvent::RxHealth { lag_s, max_step_ms } => {
+                self.rx_lag_s = *lag_s;
+                self.rx_max_step_ms = *max_step_ms;
+                if *lag_s > 1.0 {
+                    self.push_log(format!(
+                        "receiver {lag_s:.1} s behind real time (slowest step {max_step_ms:.0} ms)"
+                    ));
+                }
+            }
             StationEvent::TxAborted { label, msg_id } => {
                 self.tx_busy = None;
                 self.rig.ptt = false;
@@ -613,6 +627,11 @@ fn rx_thread(
     let mut noise_rng = rand::rngs::StdRng::seed_from_u64(epoch_secs() as u64);
     let noise_dist = live_noise.map(|s| rand_distr::Normal::new(0.0f32, s).unwrap());
     let (mut level_sq, mut level_peak, mut level_n) = (0f32, 0f32, 0usize);
+    let mut first_chunk_at: Option<Instant> = None;
+    // Mean square of the raw input while listening (noise fill level).
+    let mut input_rms = 0f32;
+    let mut max_step_ms = 0f32;
+    let mut last_health = Instant::now();
     loop {
         while let Ok(cmd) = cmds.try_recv() {
             match cmd {
@@ -623,7 +642,17 @@ fn rx_thread(
         out12.clear();
         if has_input {
             match input.recv_timeout(Duration::from_millis(100)) {
-                Ok(chunk) => dec.process(&chunk, &mut out12),
+                Ok(chunk) => {
+                    dec.process(&chunk, &mut out12);
+                    // Drain whatever else has queued up so one slow step
+                    // never leaves a backlog behind it.
+                    while let Ok(chunk) = input.try_recv() {
+                        dec.process(&chunk, &mut out12);
+                    }
+                    if first_chunk_at.is_none() {
+                        first_chunk_at = Some(Instant::now());
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
@@ -652,12 +681,6 @@ fn rx_thread(
                 level_n = 0;
             }
         }
-        if let Some(dist) = &noise_dist {
-            use rand_distr::Distribution;
-            for v in out12.iter_mut() {
-                *v += dist.sample(&mut noise_rng);
-            }
-        }
         if !out12.is_empty() {
             // Half duplex: while we key the rig (and shortly after) the
             // input carries sidetone, monitor audio or switching clicks,
@@ -667,17 +690,58 @@ fn rx_thread(
             let keyed = shared.ptt.load(Ordering::Relaxed)
                 || now_ms < shared.ptt_off_ms.load(Ordering::Relaxed) + RX_BLANK_GUARD_MS;
             if keyed && !loopback {
-                out12.iter_mut().for_each(|v| *v = 0.0);
+                // Replace, don't zero: a hole of digital silence inside
+                // noise breaks the receiver's per-bin noise normalisation.
+                // Fill with white noise at the input level measured before
+                // we keyed, so the band statistics stay stationary.
+                use rand_distr::Distribution;
+                let fill = rand_distr::Normal::new(0.0f32, input_rms.sqrt().max(1e-6)).unwrap();
+                for v in out12.iter_mut() {
+                    *v = fill.sample(&mut noise_rng);
+                }
                 if blank_start.is_none() {
                     blank_start = Some(srx.position() as f64);
                 }
-            } else if let Some(start) = blank_start.take() {
-                srx.note_tx(start, srx.position() as f64);
+            } else {
+                if let Some(start) = blank_start.take() {
+                    srx.note_tx(start, srx.position() as f64);
+                }
+                // Slow estimate of the input power while we listen.
+                let p = out12.iter().map(|v| v * v).sum::<f32>() / out12.len() as f32;
+                input_rms = if input_rms == 0.0 {
+                    p
+                } else {
+                    0.98 * input_rms + 0.02 * p
+                };
+            }
+            // Live channel: band noise for the configured SNR, added after
+            // blanking so it is present while we transmit too.
+            if let Some(dist) = &noise_dist {
+                use rand_distr::Distribution;
+                for v in out12.iter_mut() {
+                    *v += dist.sample(&mut noise_rng);
+                }
             }
             srx.push(&out12);
         }
         let now = epoch_secs();
+        let step = Instant::now();
         let events = srx.process();
+        max_step_ms = max_step_ms.max(step.elapsed().as_secs_f32() * 1000.0);
+        if last_health.elapsed() > Duration::from_secs(1) {
+            last_health = Instant::now();
+            let lag_s = match first_chunk_at {
+                Some(t0) if has_input => {
+                    (t0.elapsed().as_secs_f64() - srx.position() as f64 / srx.fs() as f64) as f32
+                }
+                _ => 0.0,
+            };
+            let _ = ev.send(StationEvent::RxHealth {
+                lag_s: lag_s.max(0.0),
+                max_step_ms,
+            });
+            max_step_ms = 0.0;
+        }
         {
             let pos = srx.position() as f64;
             let fs = srx.fs() as f64;

@@ -215,6 +215,15 @@ pub fn detect(m: &EnergyMatrix, cfg: &SyncConfig) -> Vec<Detection> {
         let best = scores[order[0]];
         let second = scores[order[1]];
         let bar = PHASE_SYMBOLS as f32 * (1.0 + 0.5 * gamma);
+        let passing = order
+            .iter()
+            .filter(|&&p| scores[p] >= bar && scores[p] >= cfg.phase_fraction * best)
+            .count();
+        // One burst has one phase; two bursts keyed together have two. More
+        // means a saturated matrix with no real phase information.
+        if passing > 2 {
+            continue;
+        }
         for &phase in &order {
             let s = scores[phase];
             if s < bar || s < cfg.phase_fraction * best {

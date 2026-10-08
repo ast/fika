@@ -75,6 +75,14 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         } else {
             ""
         }),
+        Span::styled(
+            if st.rx_lag_s > 0.5 {
+                format!("  rx lag {:.1}s", st.rx_lag_s)
+            } else {
+                String::new()
+            },
+            Style::default().fg(Color::Red),
+        ),
     ]);
     f.render_widget(
         Paragraph::new(line).style(Style::default().bg(Color::DarkGray)),
