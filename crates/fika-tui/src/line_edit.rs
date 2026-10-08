@@ -28,10 +28,7 @@ impl LineEditor {
         self.cursor
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.chars.is_empty()
-    }
-
+    #[cfg(test)]
     pub fn set(&mut self, s: &str) {
         self.chars = s.chars().collect();
         self.cursor = self.chars.len();
@@ -130,16 +127,14 @@ impl LineEditor {
             | (KeyCode::Right, true, _)
             | (KeyCode::Right, _, true) => self.cursor = self.word_end(),
             // Deleting.
-            (KeyCode::Char('h'), true, _) | (KeyCode::Backspace, false, false) => {
-                if self.cursor > 0 {
-                    self.cursor -= 1;
-                    self.chars.remove(self.cursor);
-                }
+            (KeyCode::Char('h'), true, _) | (KeyCode::Backspace, false, false)
+                if self.cursor > 0 =>
+            {
+                self.cursor -= 1;
+                self.chars.remove(self.cursor);
             }
-            (KeyCode::Char('d'), true, _) | (KeyCode::Delete, _, _) => {
-                if self.cursor < n {
-                    self.chars.remove(self.cursor);
-                }
+            (KeyCode::Char('d'), true, _) | (KeyCode::Delete, _, _) if self.cursor < n => {
+                self.chars.remove(self.cursor);
             }
             // Killing (into the kill buffer).
             (KeyCode::Char('k'), true, _) => self.kill_range(self.cursor, n),
