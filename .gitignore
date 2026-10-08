@@ -1,0 +1,11 @@
+# Rust
+target/
+
+# nix / direnv
+.direnv/
+result
+result-*
+
+# local-only
+.claude/settings.local.json
+.env.local
